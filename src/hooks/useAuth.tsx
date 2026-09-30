@@ -9,7 +9,7 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { Session, User } from "@supabase/supabase-js";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
-import { setAuthTokenProvider, scheduleSync } from "@/lib/sync/engine";
+import { setAuthTokenProvider, setCurrentUserIdProvider, scheduleSync } from "@/lib/sync/engine";
 
 interface AuthContextValue {
   user: User | null;
@@ -26,18 +26,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
 
   useEffect(() => {
+    // `currentUserId` est lu de façon synchrone par le moteur de synchronisation pour
+    // isoler le curseur de sync par compte (voir dexie.ts) — indispensable dès qu'on
+    // teste plusieurs comptes sur le même navigateur, un seul enchaînement
+    // déconnexion/reconnexion suffit à mélanger les curseurs sinon.
+    let currentUserId: string | null = null;
+    setCurrentUserIdProvider(() => currentUserId);
+
     setAuthTokenProvider(async () => {
       const { data } = await supabase.auth.getSession();
       return data.session?.access_token ?? null;
     });
 
     supabase.auth.getSession().then(({ data }) => {
+      currentUserId = data.session?.user.id ?? null;
       setSession(data.session);
       setLoading(false);
       if (data.session) void scheduleSync();
     });
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      currentUserId = newSession?.user.id ?? null;
       setSession(newSession);
       if (newSession) void scheduleSync();
     });

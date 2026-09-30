@@ -57,6 +57,15 @@ export function setAuthTokenProvider(fn: AuthTokenProvider): void {
   getAuthToken = fn;
 }
 
+// Nécessaire pour isoler le curseur de synchronisation par compte (voir dexie.ts) :
+// plusieurs comptes peuvent se succéder sur le même navigateur pendant les tests.
+type UserIdProvider = () => string | null;
+
+let getCurrentUserId: UserIdProvider = () => null;
+export function setCurrentUserIdProvider(fn: UserIdProvider): void {
+  getCurrentUserId = fn;
+}
+
 let isSyncing = false;
 let syncQueued = false;
 const listeners = new Set<(state: SyncState) => void>();
@@ -143,7 +152,9 @@ async function pushPendingEvents(): Promise<void> {
 
 async function pullRemoteEvents(): Promise<void> {
   const db = getDb();
-  const since = await getSyncCursor();
+  const userId = getCurrentUserId();
+  if (!userId) return; // pas d'utilisateur connu : rien à synchroniser pour l'instant
+  const since = await getSyncCursor(userId);
   const res = await fetch(`/api/sync/pull?since=${since}`, {
     headers: await authHeaders(),
   });
@@ -183,7 +194,7 @@ async function pullRemoteEvents(): Promise<void> {
   );
 
   if (data.cursor > since) {
-    await setSyncCursor(data.cursor);
+    await setSyncCursor(userId, data.cursor);
   }
 }
 

@@ -16,7 +16,7 @@ import {
 import { useAuth } from "@/hooks/useAuth";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
 import { useProfile, usePendingRecurrences } from "@/hooks/useVisioData";
-import { getDb } from "@/lib/db/dexie";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import { scheduleSync } from "@/lib/sync/engine";
 
 const NAV_ITEMS = [
@@ -40,18 +40,41 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     if (loading || !user || profile !== undefined) return;
 
     // Le profil est absent localement : soit ce compte n'a jamais terminé
-    // l'onboarding, soit c'est un nouvel appareil qui n'a pas encore rapatrié les
-    // données existantes. On tente une synchronisation avant de conclure, pour ne
-    // jamais renvoyer à tort un utilisateur déjà initialisé vers l'assistant d'accueil.
+    // l'onboarding, soit c'est un appareil/navigateur qui n'a pas encore rapatrié ses
+    // données. On demande directement au serveur "cet utilisateur a-t-il déjà terminé
+    // l'onboarding ?" (voir /api/profile/status) plutôt que de déduire la réponse d'une
+    // synchronisation en tâche de fond, qui peut échouer silencieusement (réseau,
+    // session en cours de rafraîchissement...) et renvoyer à tort un compte déjà
+    // configuré vers l'assistant d'accueil — avec le risque de recréer un second
+    // budget général et de violer la contrainte d'unicité en base.
     let cancelled = false;
     (async () => {
-      if (typeof navigator !== "undefined" && navigator.onLine) {
-        await scheduleSync().catch(() => undefined);
-      }
-      if (cancelled) return;
-      const existing = await getDb().profiles.get(user.id);
-      if (!existing && !cancelled) {
-        router.replace("/onboarding");
+      try {
+        const {
+          data: { session },
+        } = await getSupabaseBrowserClient().auth.getSession();
+        const token = session?.access_token;
+        if (!token) return; // pas de session exploitable : rien à faire ici
+
+        const res = await fetch("/api/profile/status", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok || cancelled) return; // échec réseau : on ne redirige surtout pas vers l'onboarding par défaut
+
+        const data: { onboardingCompleted: boolean } = await res.json();
+        if (cancelled) return;
+
+        if (!data.onboardingCompleted) {
+          router.replace("/onboarding");
+        } else {
+          // Le compte est déjà prêt côté serveur mais absent localement : on
+          // synchronise pour rapatrier ses données (nouvel appareil, navigation
+          // privée, stockage local effacé...).
+          await scheduleSync();
+        }
+      } catch {
+        // Silencieux et volontaire : une simple erreur réseau ne doit jamais
+        // provoquer une redirection vers l'onboarding.
       }
     })();
     return () => {

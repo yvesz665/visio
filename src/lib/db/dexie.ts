@@ -74,15 +74,24 @@ export async function getOrCreateDeviceId(): Promise<string> {
   return id;
 }
 
-export async function getSyncCursor(): Promise<number> {
+/**
+ * Le curseur de synchronisation est isolé par utilisateur (clé `cursor:<userId>`), pas
+ * global au navigateur. Sans cela, basculer entre deux comptes sur le même appareil
+ * (courant en test) fait hériter le second compte du curseur laissé par le premier :
+ * la prochaine synchronisation prend alors la voie incrémentale au lieu de l'amorçage
+ * complet, et des entités du second compte qui n'ont jamais généré d'événement de
+ * journal (le budget général créé pendant l'onboarding, notamment) n'apparaissent
+ * jamais localement.
+ */
+export async function getSyncCursor(userId: string): Promise<number> {
   const db = getDb();
-  const row = await db.syncMeta.get("cursor");
+  const row = await db.syncMeta.get(`cursor:${userId}`);
   return row ? Number(row.value) : 0;
 }
 
-export async function setSyncCursor(seq: number): Promise<void> {
+export async function setSyncCursor(userId: string, seq: number): Promise<void> {
   const db = getDb();
-  await db.syncMeta.put({ key: "cursor", value: String(seq) });
+  await db.syncMeta.put({ key: `cursor:${userId}`, value: String(seq) });
 }
 
 /** Purge complète de la base locale (déconnexion ou suppression de compte, 9.4). */
