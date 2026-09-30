@@ -35,13 +35,14 @@ import {
 } from "@/lib/domain/envelopes";
 import { computeUndoSteps, findMostRecentUndoable, assertIsMostRecent, UndoError } from "@/lib/domain/journal";
 import { computeNextRunDate } from "@/lib/domain/recurrence";
+import { generateId } from "@/lib/utils/id";
 
 function nowIso(): string {
   return new Date().toISOString();
 }
 
 function newId(): string {
-  return crypto.randomUUID();
+  return generateId();
 }
 
 async function logEvent(params: {

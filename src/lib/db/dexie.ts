@@ -5,6 +5,7 @@
  */
 
 import Dexie, { type Table } from "dexie";
+import { generateId } from "@/lib/utils/id";
 import type {
   Attachment,
   Envelope,
@@ -68,7 +69,7 @@ export async function getOrCreateDeviceId(): Promise<string> {
   const db = getDb();
   const existing = await db.syncMeta.get(DEVICE_ID_KEY);
   if (existing) return existing.value;
-  const id = crypto.randomUUID();
+  const id = generateId();
   await db.syncMeta.put({ key: DEVICE_ID_KEY, value: id });
   return id;
 }

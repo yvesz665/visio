@@ -13,6 +13,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import { getDb } from "@/lib/db/dexie";
+import { generateId } from "@/lib/utils/id";
 import { SUPPORTED_CURRENCIES } from "@/lib/domain/currency";
 import { ColorPicker, IconPicker } from "@/components/IconPicker";
 import type { Envelope, Profile } from "@/types/domain";
@@ -40,7 +41,7 @@ export default function OnboardingPage() {
   const [rootAmount, setRootAmount] = useState<number>(0);
 
   const [envelopes, setEnvelopes] = useState<DraftEnvelope[]>([
-    { id: crypto.randomUUID(), name: "Alimentation", color: "#158454", icon: "food", allocatedAmount: 0 },
+    { id: generateId(), name: "Alimentation", color: "#158454", icon: "food", allocatedAmount: 0 },
   ]);
 
   const allocatedTotal = envelopes.reduce((s, e) => s + (e.allocatedAmount || 0), 0);
@@ -49,7 +50,7 @@ export default function OnboardingPage() {
   function addEnvelope() {
     setEnvelopes((prev) => [
       ...prev,
-      { id: crypto.randomUUID(), name: "", color: "#2563eb", icon: "wallet", allocatedAmount: 0 },
+      { id: generateId(), name: "", color: "#2563eb", icon: "wallet", allocatedAmount: 0 },
     ]);
   }
 
@@ -70,7 +71,7 @@ export default function OnboardingPage() {
     setSubmitting(true);
     setError(null);
 
-    const rootId = crypto.randomUUID();
+    const rootId = generateId();
     const payload = {
       currency,
       cycleAnchorDay,
