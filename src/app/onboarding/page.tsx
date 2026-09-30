@@ -92,11 +92,16 @@ export default function OnboardingPage() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? "Une erreur est survenue.");
       }
-      const data: { profile: Profile; envelopes: Envelope[] } = await res.json();
+      const data: { profile: Profile | null; envelopes: Envelope[] } = await res.json();
 
       const db = getDb();
       await db.transaction("rw", [db.profiles, db.envelopes], async () => {
-        await db.profiles.put({ ...data.profile, syncStatus: "synced" } as Profile);
+        // `profile` peut être absent dans le cas (très improbable) où l'onboarding
+        // avait déjà été fait mais sans profil retrouvable : on se contente alors de
+        // recopier les enveloppes déjà existantes pour ne pas bloquer l'utilisateur.
+        if (data.profile) {
+          await db.profiles.put(data.profile);
+        }
         for (const env of data.envelopes) {
           await db.envelopes.put({ ...env, syncStatus: "synced" });
         }

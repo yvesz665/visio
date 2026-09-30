@@ -9,7 +9,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClientFromCookies } from "@/lib/supabase/server";
-import { envelopeToRow, profileToRow } from "@/lib/supabase/mappers";
+import { envelopeToRow, profileToRow, rowToEnvelope, rowToProfile } from "@/lib/supabase/mappers";
 import type { Envelope, Profile } from "@/types/domain";
 
 interface OnboardingBody {
@@ -34,6 +34,30 @@ export async function POST(req: NextRequest) {
   } = await supabase.auth.getUser();
   if (authError || !user) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
+  // Idempotence : un utilisateur ne peut avoir qu'un seul budget général (contrainte
+  // "envelopes_one_root_per_user" en base). Si l'onboarding a déjà été effectué
+  // (double soumission, nouvel appareil renvoyé ici par erreur, etc.), on renvoie
+  // l'état déjà existant au lieu de tenter une seconde création qui violerait cette
+  // contrainte.
+  const { data: existingRoot } = await supabase
+    .from("envelopes")
+    .select("*")
+    .eq("user_id", user.id)
+    .is("parent_id", null)
+    .maybeSingle();
+
+  if (existingRoot) {
+    const [{ data: existingProfileRow }, { data: existingEnvelopeRows }] = await Promise.all([
+      supabase.from("profiles").select("*").eq("id", user.id).maybeSingle(),
+      supabase.from("envelopes").select("*").eq("user_id", user.id),
+    ]);
+    return NextResponse.json({
+      profile: existingProfileRow ? rowToProfile(existingProfileRow) : null,
+      envelopes: (existingEnvelopeRows ?? []).map(rowToEnvelope),
+      alreadyOnboarded: true,
+    });
   }
 
   const body = (await req.json()) as OnboardingBody;
