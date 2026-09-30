@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-neutral-50 text-neutral-900 antialiased;
+}
+
+/* Contrastes conformes WCAG AA (11.3) : focus visible systématique au clavier. */
+:focus-visible {
+  outline: 2px solid theme("colors.brand.600");
+  outline-offset: 2px;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none;
+}
+.btn-primary {
+  @apply btn bg-brand-600 text-white hover:bg-brand-700;
+}
+.btn-secondary {
+  @apply btn bg-white text-neutral-700 border border-neutral-300 hover:bg-neutral-50;
+}
+.btn-danger {
+  @apply btn bg-red-600 text-white hover:bg-red-700;
+}
+.card {
+  @apply rounded-xl border border-neutral-200 bg-white p-4 shadow-sm;
+}
+.input {
+  @apply w-full rounded-lg border border-neutral-300 px-3 py-2 text-sm focus:border-brand-500 focus:ring-1 focus:ring-brand-500;
+}
+.label {
+  @apply mb-1 block text-sm font-medium text-neutral-700;
+}
