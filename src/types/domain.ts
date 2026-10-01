@@ -264,6 +264,9 @@ export interface EnvelopeSummary {
   carryIn: number; // report reçu (0 si pas récurrente ou première période)
   transfersIn: number; // transferts entrants sur la période en cours
   transfersOut: number; // transferts sortants sur la période en cours
+  /** Bornes du cycle effectivement utilisées pour ce calcul (ISO) ; null si pas de fenêtre (non récurrente). */
+  cycleStart: string | null;
+  cycleEnd: string | null;
   remaining: number; // = disponible = allocatedAmount + carryIn + transfersIn - transfersOut - subtreeSpent
   percentConsumed: number; // subtreeSpent / allocatedAmount * 100 (0 si allocatedAmount = 0)
   isOverBudget: boolean; // remaining < 0

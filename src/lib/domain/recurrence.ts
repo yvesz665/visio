@@ -120,3 +120,17 @@ export function computeNextRunDate(
 export function isDue(nextRunDate: Date, today: Date): boolean {
   return nextRunDate.getTime() <= today.getTime();
 }
+
+const CYCLE_RANGE_LABEL = new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short", year: "numeric" });
+
+/**
+ * Libellé lisible d'un cycle pour l'affichage (ex: "1 oct. 2026 – 31 oct. 2026"). `end`
+ * est la borne EXCLUSIVE telle que stockée/calculée (currentCycleEnd, EnvelopePeriod.cycleEnd) :
+ * on affiche le dernier jour réellement inclus (end - 1 jour), jamais la borne exclusive
+ * elle-même, pour ne pas donner l'impression que le cycle déborde sur le mois suivant.
+ */
+export function formatCycleRange(cycleStart: string, cycleEndExclusive: string): string {
+  const start = new Date(`${cycleStart}T00:00:00Z`);
+  const lastDay = new Date(new Date(`${cycleEndExclusive}T00:00:00Z`).getTime() - 24 * 60 * 60 * 1000);
+  return `${CYCLE_RANGE_LABEL.format(start)} – ${CYCLE_RANGE_LABEL.format(lastDay)}`;
+}

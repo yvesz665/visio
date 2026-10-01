@@ -14,6 +14,7 @@ import { TransferForm } from "@/components/TransferForm";
 import { TransactionForm, type TransactionFormValues } from "@/components/TransactionForm";
 import { findSummaryById, AllocationError } from "@/lib/domain/envelopes";
 import { formatMoney } from "@/lib/domain/currency";
+import { formatCycleRange } from "@/lib/domain/recurrence";
 import {
   addAttachment,
   archiveEnvelope,
@@ -72,6 +73,8 @@ export default function EnvelopeDetailPage() {
     transfersIn,
     transfersOut,
     isProvisional,
+    cycleStart,
+    cycleEnd,
   } = summary;
   const isRoot = envelope.parentId === null;
 
@@ -182,7 +185,12 @@ export default function EnvelopeDetailPage() {
       {envelope.isRecurring && (
         <section className="card">
           <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-neutral-700">Cycle en cours</h2>
+            <div>
+              <h2 className="text-sm font-semibold text-neutral-700">Cycle en cours</h2>
+              {cycleStart && cycleEnd && (
+                <p className="text-xs text-neutral-500">{formatCycleRange(cycleStart, cycleEnd)}</p>
+              )}
+            </div>
             {isProvisional && (
               <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800">
                 Provisoire — en attente de synchronisation
@@ -221,7 +229,7 @@ export default function EnvelopeDetailPage() {
             {periods.map((p) => (
               <li key={p.id} className="grid grid-cols-2 gap-2 py-2 sm:grid-cols-6">
                 <span className="col-span-2 text-neutral-500">
-                  {p.cycleStart} → {p.cycleEnd}
+                  {formatCycleRange(p.cycleStart, p.cycleEnd)}
                 </span>
                 <span>Alloué {formatMoney(p.allocatedAmount, currency)}</span>
                 <span>Report {formatMoney(p.carryIn, currency)}</span>

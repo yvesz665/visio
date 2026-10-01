@@ -201,6 +201,8 @@ export function buildEnvelopeTree(params: BuildEnvelopeTreeParams): EnvelopeSumm
       isOverBudget: remaining < 0,
       isNearThreshold: percentConsumed >= threshold && percentConsumed < 100,
       isProvisional,
+      cycleStart: window ? window.start.toISOString().slice(0, 10) : null,
+      cycleEnd: window ? window.end.toISOString().slice(0, 10) : null,
     };
   }
 

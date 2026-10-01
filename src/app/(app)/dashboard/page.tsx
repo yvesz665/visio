@@ -16,8 +16,9 @@ import {
 } from "recharts";
 import { useEnvelopeTree, useProfile, useSoldeReel, useTransactions } from "@/hooks/useVisioData";
 import { EnvelopeTreeView } from "@/components/EnvelopeTreeView";
-import { formatMoney } from "@/lib/domain/currency";
+import { formatMoney, fromMinorUnits } from "@/lib/domain/currency";
 import { flattenSummary } from "@/lib/domain/envelopes";
+import { formatCycleRange } from "@/lib/domain/recurrence";
 import { computeCycleBuckets } from "@/lib/domain/trends";
 
 export default function DashboardPage() {
@@ -57,22 +58,38 @@ export default function DashboardPage() {
     <div className="space-y-8">
       <header>
         <h1 className="text-2xl font-semibold text-neutral-900">Tableau de bord</h1>
-        <p className="text-sm text-neutral-500">Cycle en cours — vue d&apos;ensemble de {tree.envelope.name}.</p>
+        <p className="text-sm text-neutral-500">
+          {tree.cycleStart && tree.cycleEnd ? (
+            <>Cycle en cours : <span className="font-medium text-neutral-700">{formatCycleRange(tree.cycleStart, tree.cycleEnd)}</span> — {tree.envelope.name}.</>
+          ) : (
+            <>Vue d&apos;ensemble de {tree.envelope.name}.</>
+          )}
+        </p>
       </header>
 
       <section className="grid gap-4 sm:grid-cols-3">
-        <StatCard label="Budget général" value={formatMoney(tree.envelope.allocatedAmount, currency)} />
+        <StatCard label="Alloué ce cycle" value={formatMoney(tree.envelope.allocatedAmount, currency)} />
         <StatCard
           label="Dépensé ce cycle"
           value={formatMoney(tree.subtreeSpent, currency)}
           tone={tree.isOverBudget ? "danger" : "default"}
         />
         <StatCard
-          label="Disponible"
+          label="Disponible (alloué + report)"
           value={formatMoney(tree.remaining, currency)}
           tone={tree.remaining < 0 ? "danger" : "success"}
         />
       </section>
+
+      {tree.carryIn !== 0 && (
+        <p className="text-xs text-neutral-500">
+          Dont{" "}
+          <span className={tree.carryIn < 0 ? "font-medium text-red-600" : "font-medium text-brand-700"}>
+            {formatMoney(tree.carryIn, currency)}
+          </span>{" "}
+          reporté du cycle précédent.
+        </p>
+      )}
 
       <section className="card">
         <h2 className="mb-3 text-sm font-semibold text-neutral-700">Solde réel</h2>
@@ -149,7 +166,7 @@ export default function DashboardPage() {
               <BarChart data={cycleBuckets}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="label" fontSize={11} />
-                <YAxis fontSize={11} />
+                <YAxis fontSize={11} tickFormatter={(v: number) => fromMinorUnits(v).toLocaleString("fr-FR")} />
                 <Tooltip formatter={(v: number) => formatMoney(v, currency)} />
                 <Legend />
                 <Bar dataKey="income" name="Remboursements" fill="#22a468" radius={[4, 4, 0, 0]} />
