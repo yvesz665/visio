@@ -6,9 +6,9 @@
  */
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { rowToEnvelope, rowToProfile, rowToTransaction } from "@/lib/supabase/mappers";
+import { rowToEnvelope, rowToProfile, rowToTransaction, rowToTransfer } from "@/lib/supabase/mappers";
 import { buildEnvelopeTree, getAncestors, findSummaryById } from "@/lib/domain/envelopes";
-import { currentCycleEnd, currentCycleStart, isWithinCycle } from "@/lib/domain/recurrence";
+import { todayInTimeZone } from "@/lib/domain/recurrence";
 import { detectNotificationTrigger } from "@/lib/domain/transactions";
 import { sendPushToUser } from "./push-server";
 import type { Transaction } from "@/types/domain";
@@ -20,30 +20,41 @@ export async function checkThresholdAndNotify(
   justInsertedTransaction: Pick<Transaction, "amount" | "type">
 ): Promise<void> {
   try {
-    const [{ data: profileRow }, { data: envelopeRows }, { data: txRows }] = await Promise.all([
-      supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
-      supabase.from("envelopes").select("*").eq("user_id", userId),
-      supabase.from("transactions").select("*").eq("user_id", userId).is("deleted_at", null),
-    ]);
+    const [{ data: profileRow }, { data: envelopeRows }, { data: txRows }, { data: transferRows }, { data: periodRows }] =
+      await Promise.all([
+        supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
+        supabase.from("envelopes").select("*").eq("user_id", userId),
+        supabase.from("transactions").select("*").eq("user_id", userId).is("deleted_at", null),
+        supabase.from("transfers").select("*").eq("user_id", userId),
+        supabase.from("envelope_periods").select("*").eq("user_id", userId),
+      ]);
     if (!profileRow || !envelopeRows) return;
 
     const profile = rowToProfile(profileRow);
     const envelopes = envelopeRows.map(rowToEnvelope);
-    const allTx = (txRows ?? []).map(rowToTransaction);
+    const transactions = (txRows ?? []).map(rowToTransaction);
+    const transfers = (transferRows ?? []).map(rowToTransfer);
 
-    const now = new Date();
-    const cycleStart = currentCycleStart(now, profile.cycleAnchorDay);
-    const cycleEnd = currentCycleEnd(now, profile.cycleAnchorDay);
-
-    const txByEnvelope = new Map<string, Transaction[]>();
-    for (const tx of allTx) {
-      if (!isWithinCycle(new Date(tx.occurredAt), cycleStart, cycleEnd)) continue;
-      const list = txByEnvelope.get(tx.envelopeId) ?? [];
-      list.push(tx);
-      txByEnvelope.set(tx.envelopeId, list);
+    const carryInByEnvelope = new Map<string, number>();
+    const latestCycleEndByEnvelope = new Map<string, string>();
+    for (const row of periodRows ?? []) {
+      const envelopeId = row.envelope_id as string;
+      const cycleEnd = row.cycle_end as string;
+      if (!latestCycleEndByEnvelope.has(envelopeId) || cycleEnd > latestCycleEndByEnvelope.get(envelopeId)!) {
+        latestCycleEndByEnvelope.set(envelopeId, cycleEnd);
+        carryInByEnvelope.set(envelopeId, Number(row.carry_out));
+      }
     }
 
-    const tree = buildEnvelopeTree(envelopes, txByEnvelope, profile.alertThresholdPct);
+    const tree = buildEnvelopeTree({
+      envelopes,
+      transactions,
+      transfers,
+      carryInByEnvelope,
+      globalCycleAnchorDay: profile.cycleAnchorDay,
+      today: todayInTimeZone(new Date(), profile.timezone),
+      defaultThresholdPct: profile.alertThresholdPct,
+    });
     if (!tree) return;
 
     const affectedEnvelope = envelopes.find((e) => e.id === affectedEnvelopeId);

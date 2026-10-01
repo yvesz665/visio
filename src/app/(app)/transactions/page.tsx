@@ -39,7 +39,7 @@ export default function TransactionsPage() {
   const currency = profile?.defaultCurrency ?? "XOF";
   const envelopeName = useMemo(() => {
     const map = new Map((envelopes ?? []).map((e) => [e.id, e.name]));
-    return (id: string) => map.get(id) ?? "?";
+    return (id: string | null) => (id ? (map.get(id) ?? "?") : "Hors budget");
   }, [envelopes]);
 
   async function handleAdd(values: TransactionFormValues) {
@@ -200,6 +200,7 @@ export default function TransactionsPage() {
           <TransactionForm
             envelopes={envelopes}
             defaultEnvelopeId={editing.envelopeId}
+            initial={editing}
             onSubmit={handleEditSubmit}
             allowRecurring={false}
           />

@@ -41,7 +41,7 @@ export function EnvelopeTreeView({
                 <AlertTriangle className={`h-3.5 w-3.5 ${isOverBudget ? "text-red-600" : "text-amber-600"}`} />
               )}
               <span className={isOverBudget ? "font-semibold text-red-600" : "text-neutral-500"}>
-                {formatMoney(remaining, currency)} restant
+                {formatMoney(remaining, currency)} disponible
               </span>
             </div>
           </div>

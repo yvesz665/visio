@@ -10,16 +10,29 @@ import { downloadBlob } from "./download";
 
 export async function exportAllDataAsJson(userId: string): Promise<void> {
   const db = getDb();
-  const [profile, envelopes, transactions, recurrenceRules, pendingRecurrences, transfers, journalEvents] =
-    await Promise.all([
-      db.profiles.get(userId),
-      db.envelopes.where("userId").equals(userId).toArray(),
-      db.transactions.where("userId").equals(userId).toArray(),
-      db.recurrenceRules.where("userId").equals(userId).toArray(),
-      db.pendingRecurrences.where("userId").equals(userId).toArray(),
-      db.transfers.where("userId").equals(userId).toArray(),
-      db.journalEvents.where("userId").equals(userId).toArray(),
-    ]);
+  const [
+    profile,
+    envelopes,
+    transactions,
+    recurrenceRules,
+    pendingRecurrences,
+    transfers,
+    incomeSources,
+    incomeEntries,
+    envelopePeriods,
+    journalEvents,
+  ] = await Promise.all([
+    db.profiles.get(userId),
+    db.envelopes.where("userId").equals(userId).toArray(),
+    db.transactions.where("userId").equals(userId).toArray(),
+    db.recurrenceRules.where("userId").equals(userId).toArray(),
+    db.pendingRecurrences.where("userId").equals(userId).toArray(),
+    db.transfers.where("userId").equals(userId).toArray(),
+    db.incomeSources.where("userId").equals(userId).toArray(),
+    db.incomeEntries.where("userId").equals(userId).toArray(),
+    db.envelopePeriods.where("userId").equals(userId).toArray(),
+    db.journalEvents.where("userId").equals(userId).toArray(),
+  ]);
 
   const payload = {
     exportedAt: new Date().toISOString(),
@@ -29,6 +42,9 @@ export async function exportAllDataAsJson(userId: string): Promise<void> {
     recurrenceRules,
     pendingRecurrences,
     transfers,
+    incomeSources,
+    incomeEntries,
+    envelopePeriods,
     journalEvents,
   };
 

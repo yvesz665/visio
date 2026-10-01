@@ -5,7 +5,9 @@
  * (revalidation à la synchronisation) et testé unitairement.
  */
 
-import type { Envelope, EnvelopeSummary, Transaction } from "@/types/domain";
+import type { Envelope, EnvelopeSummary, Transaction, Transfer } from "@/types/domain";
+import { currentCycleEnd, currentCycleStart, isWithinCycle } from "./recurrence";
+import { computeDisponible, computePercentConsumed } from "./periods";
 
 export class AllocationError extends Error {
   code: "allocation_exceeds_parent" | "allocation_exceeds_new_amount" | "root_immutable_parent" | "not_empty";
@@ -32,7 +34,7 @@ export function assertAllocationFits(
   if (!parent) return; // la racine n'a pas de parent, aucune contrainte de ce type
   const siblingsSum = siblings.reduce((sum, e) => sum + e.allocatedAmount, 0);
   const total = siblingsSum + candidateAmount;
-  if (total > parent.allocatedAmount + EPSILON) {
+  if (total > parent.allocatedAmount) {
     throw new AllocationError(
       "allocation_exceeds_parent",
       `La somme des enveloppes (${total}) dépasserait le montant alloué au parent (${parent.allocatedAmount}).`
@@ -49,15 +51,13 @@ export function assertNewAmountCoversChildren(
   newAmount: number
 ): void {
   const childrenSum = activeChildren.reduce((sum, e) => sum + e.allocatedAmount, 0);
-  if (childrenSum > newAmount + EPSILON) {
+  if (childrenSum > newAmount) {
     throw new AllocationError(
       "allocation_exceeds_new_amount",
       `Le nouveau montant (${newAmount}) est inférieur à ce qui est déjà réparti aux enfants (${childrenSum}).`
     );
   }
 }
-
-const EPSILON = 0.005; // tolérance pour les arrondis monétaires (centimes)
 
 /** Montant disponible pour des transactions directes sur ce noeud (3.3, 2e règle). */
 export function availableForDirectTransactions(
@@ -73,15 +73,39 @@ export function canHardDelete(hasTransactions: boolean, hasChildren: boolean): b
   return !hasTransactions && !hasChildren;
 }
 
+export interface BuildEnvelopeTreeParams {
+  envelopes: Envelope[];
+  /** Non filtrées : chaque noeud résout sa propre fenêtre de cycle (custom ou héritée). */
+  transactions: Transaction[];
+  transfers: Transfer[];
+  /** Report reçu par enveloppe, issu de sa dernière période close (0 si absente). */
+  carryInByEnvelope: Map<string, number>;
+  globalCycleAnchorDay: number;
+  /** "Aujourd'hui", déjà résolu dans le fuseau de l'utilisateur (voir todayInTimeZone). */
+  today: Date;
+  defaultThresholdPct: number;
+  /** Ids dont le calcul s'appuie sur des mutations locales pas encore synchronisées (10.2). */
+  provisionalEnvelopeIds?: Set<string>;
+}
+
 /**
- * Construit l'arborescence de résumés (montant consommé / restant / alertes) à partir
- * d'une liste plate d'enveloppes et de transactions déjà filtrées sur le cycle en cours.
+ * Construit l'arborescence de résumés (report, disponible, alertes) à partir d'une
+ * liste plate d'enveloppes. Chaque noeud résout sa propre fenêtre de cycle (3.4 : cycle
+ * global ou personnalisé) ; une enveloppe non récurrente n'a ni fenêtre ni report, elle
+ * agrège tout son historique (elle se clôture par archivage, pas par cycle).
  */
-export function buildEnvelopeTree(
-  envelopes: Envelope[],
-  transactionsByEnvelope: Map<string, Transaction[]>,
-  defaultThresholdPct: number
-): EnvelopeSummary | null {
+export function buildEnvelopeTree(params: BuildEnvelopeTreeParams): EnvelopeSummary | null {
+  const {
+    envelopes,
+    transactions,
+    transfers,
+    carryInByEnvelope,
+    globalCycleAnchorDay,
+    today,
+    defaultThresholdPct,
+    provisionalEnvelopeIds,
+  } = params;
+
   const byParent = new Map<string | null, Envelope[]>();
   for (const env of envelopes) {
     const key = env.parentId;
@@ -93,12 +117,42 @@ export function buildEnvelopeTree(
   const root = envelopes.find((e) => e.parentId === null);
   if (!root) return null;
 
-  function computeDirectSpent(envelopeId: string): number {
-    const txs = transactionsByEnvelope.get(envelopeId) ?? [];
-    return txs.reduce((sum, t) => {
-      if (t.deletedAt) return sum;
-      return sum + (t.type === "expense" ? t.amount : -t.amount);
-    }, 0);
+  function resolveWindow(envelope: Envelope): { start: Date; end: Date } | null {
+    if (!envelope.isRecurring) return null; // pas de fenêtre : agrège tout l'historique
+    const anchorDay =
+      envelope.cycleMode === "custom" && envelope.cycleAnchorDay
+        ? envelope.cycleAnchorDay
+        : globalCycleAnchorDay;
+    return { start: currentCycleStart(today, anchorDay), end: currentCycleEnd(today, anchorDay) };
+  }
+
+  function inWindow(date: string, window: { start: Date; end: Date } | null): boolean {
+    if (!window) return true; // pas de fenêtre = tout l'historique compte
+    return isWithinCycle(new Date(`${date}T00:00:00Z`), window.start, window.end);
+  }
+
+  function computeDirectSpent(envelopeId: string, window: { start: Date; end: Date } | null): number {
+    let sum = 0;
+    for (const t of transactions) {
+      if (t.deletedAt || t.envelopeId !== envelopeId) continue;
+      if (!inWindow(t.occurredAt, window)) continue;
+      sum += t.type === "expense" ? t.amount : -t.amount; // "income" ici = remboursement
+    }
+    return sum;
+  }
+
+  function computeTransfers(
+    envelopeId: string,
+    window: { start: Date; end: Date } | null
+  ): { transfersIn: number; transfersOut: number } {
+    let transfersIn = 0;
+    let transfersOut = 0;
+    for (const tr of transfers) {
+      if (!inWindow(tr.occurredAt.slice(0, 10), window)) continue;
+      if (tr.toEnvelopeId === envelopeId) transfersIn += tr.amount;
+      if (tr.fromEnvelopeId === envelopeId) transfersOut += tr.amount;
+    }
+    return { transfersIn, transfersOut };
   }
 
   function build(envelope: Envelope): EnvelopeSummary {
@@ -107,12 +161,30 @@ export function buildEnvelopeTree(
       .sort((a, b) => a.sortOrder - b.sortOrder);
 
     const children = childEnvelopes.map(build);
-    const directSpent = computeDirectSpent(envelope.id);
+    const window = resolveWindow(envelope);
+    const directSpent = computeDirectSpent(envelope.id, window);
     const subtreeSpent = directSpent + children.reduce((s, c) => s + c.subtreeSpent, 0);
     const allocatedToChildren = childEnvelopes.reduce((s, e) => s + e.allocatedAmount, 0);
     const threshold = envelope.alertThresholdPct ?? defaultThresholdPct;
-    const percentConsumed =
-      envelope.allocatedAmount > 0 ? (subtreeSpent / envelope.allocatedAmount) * 100 : 0;
+
+    const carryIn = envelope.isRecurring ? (carryInByEnvelope.get(envelope.id) ?? 0) : 0;
+    const { transfersIn, transfersOut } = envelope.isRecurring
+      ? computeTransfers(envelope.id, window)
+      : { transfersIn: 0, transfersOut: 0 };
+
+    const remaining = computeDisponible({
+      allocatedAmount: envelope.allocatedAmount,
+      carryIn,
+      transfersIn,
+      transfersOut,
+      spent: subtreeSpent,
+    });
+    const percentConsumed = computePercentConsumed(subtreeSpent, envelope.allocatedAmount);
+
+    // "provisoire" hérité : si un descendant a des mutations locales non synchronisées,
+    // le disponible agrégé de tous ses ancêtres l'est aussi.
+    const isProvisional =
+      (provisionalEnvelopeIds?.has(envelope.id) ?? false) || children.some((c) => c.isProvisional);
 
     return {
       envelope,
@@ -121,10 +193,14 @@ export function buildEnvelopeTree(
       subtreeSpent,
       allocatedToChildren,
       availableForDirect: envelope.allocatedAmount - allocatedToChildren,
-      remaining: envelope.allocatedAmount - subtreeSpent,
+      carryIn,
+      transfersIn,
+      transfersOut,
+      remaining,
       percentConsumed,
-      isOverBudget: subtreeSpent > envelope.allocatedAmount + EPSILON,
+      isOverBudget: remaining < 0,
       isNearThreshold: percentConsumed >= threshold && percentConsumed < 100,
+      isProvisional,
     };
   }
 

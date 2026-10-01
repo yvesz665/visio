@@ -61,7 +61,7 @@ describe("computeUndoSteps", () => {
     ]);
   });
 
-  it("transfer.create s'annule en restaurant les deux montants alloués", () => {
+  it("transfer.create s'annule par une simple suppression (n'a jamais touché allocated_amount)", () => {
     const event = makeEvent({
       eventType: "transfer.create",
       entityType: "transfer",
@@ -70,14 +70,11 @@ describe("computeUndoSteps", () => {
         fromEnvelopeId: "a",
         toEnvelopeId: "b",
         amount: 100,
-        fromAllocatedBefore: 500,
-        toAllocatedBefore: 200,
+        occurredAt: "2026-01-01",
       },
     });
     const steps = computeUndoSteps(event);
-    expect(steps).toContainEqual({ table: "envelopes", op: "upsert", id: "a", data: { allocatedAmount: 500 } });
-    expect(steps).toContainEqual({ table: "envelopes", op: "upsert", id: "b", data: { allocatedAmount: 200 } });
-    expect(steps).toContainEqual({ table: "transfers", op: "delete", id: "tr1" });
+    expect(steps).toEqual([{ table: "transfers", op: "delete", id: "tr1" }]);
   });
 
   it("pending_recurrence.confirm supprime la transaction créée et rouvre l'échéance", () => {

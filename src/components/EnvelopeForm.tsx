@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { ColorPicker, IconPicker } from "./IconPicker";
 import { AllocationError } from "@/lib/domain/envelopes";
+import { fromMinorUnits, toMinorUnits } from "@/lib/domain/currency";
 import type { Envelope } from "@/types/domain";
 
 export interface EnvelopeFormValues {
@@ -32,7 +33,9 @@ export function EnvelopeForm({
   const [name, setName] = useState(initial?.name ?? "");
   const [color, setColor] = useState(initial?.color ?? "#158454");
   const [icon, setIcon] = useState(initial?.icon ?? "wallet");
-  const [allocatedAmount, setAllocatedAmount] = useState(initial?.allocatedAmount ?? 0);
+  const [allocatedAmount, setAllocatedAmount] = useState(
+    initial?.allocatedAmount != null ? fromMinorUnits(initial.allocatedAmount) : 0
+  );
   const [isRecurring, setIsRecurring] = useState(initial?.isRecurring ?? true);
   const [customCycle, setCustomCycle] = useState((initial?.cycleMode ?? "inherit") === "custom");
   const [cycleAnchorDay, setCycleAnchorDay] = useState(initial?.cycleAnchorDay ?? 1);
@@ -56,7 +59,7 @@ export function EnvelopeForm({
         name: name.trim(),
         color,
         icon,
-        allocatedAmount,
+        allocatedAmount: toMinorUnits(allocatedAmount),
         isRecurring,
         cycleMode: customCycle ? "custom" : "inherit",
         cycleAnchorDay: customCycle ? cycleAnchorDay : null,

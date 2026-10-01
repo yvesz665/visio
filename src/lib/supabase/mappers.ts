@@ -7,6 +7,9 @@
 
 import type {
   Envelope,
+  EnvelopePeriod,
+  IncomeEntry,
+  IncomeSource,
   JournalEvent,
   PendingRecurrence,
   Profile,
@@ -62,7 +65,19 @@ const KEY_MAPS = {
     defaultCurrency: "default_currency",
     cycleAnchorDay: "cycle_anchor_day",
     alertThresholdPct: "alert_threshold_pct",
+    timezone: "timezone",
     onboardingCompleted: "onboarding_completed",
+  },
+  income_source: {
+    name: "name",
+    isDefault: "is_default",
+  },
+  income_entry: {
+    amount: "amount",
+    occurredAt: "occurred_at",
+    sourceId: "source_id",
+    description: "description",
+    deletedAt: "deleted_at",
   },
 } as const;
 
@@ -87,6 +102,7 @@ export function profileToRow(p: Profile): Record<string, unknown> {
     default_currency: p.defaultCurrency,
     cycle_anchor_day: p.cycleAnchorDay,
     alert_threshold_pct: p.alertThresholdPct,
+    timezone: p.timezone,
     onboarding_completed: p.onboardingCompleted,
   };
 }
@@ -99,6 +115,7 @@ export function rowToProfile(r: any): Profile {
     defaultCurrency: r.default_currency,
     cycleAnchorDay: r.cycle_anchor_day,
     alertThresholdPct: Number(r.alert_threshold_pct),
+    timezone: r.timezone ?? "Africa/Ouagadougou",
     onboardingCompleted: r.onboarding_completed,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -282,6 +299,68 @@ export function journalEventToRow(e: JournalEvent): Record<string, unknown> {
     undoes_event_id: e.undoesEventId,
     status: e.status,
     reject_reason: e.rejectReason ?? null,
+  };
+}
+
+export function incomeSourceToRow(s: IncomeSource): Record<string, unknown> {
+  return {
+    id: s.id,
+    user_id: s.userId,
+    name: s.name,
+    is_default: s.isDefault,
+  };
+}
+
+export function rowToIncomeSource(r: any): IncomeSource {
+  return {
+    id: r.id,
+    userId: r.user_id,
+    name: r.name,
+    isDefault: r.is_default,
+    createdAt: r.created_at,
+  };
+}
+
+export function incomeEntryToRow(e: IncomeEntry): Record<string, unknown> {
+  return {
+    id: e.id,
+    user_id: e.userId,
+    amount: e.amount,
+    occurred_at: e.occurredAt,
+    source_id: e.sourceId,
+    description: e.description,
+    deleted_at: e.deletedAt,
+  };
+}
+
+export function rowToIncomeEntry(r: any): IncomeEntry {
+  return {
+    id: r.id,
+    userId: r.user_id,
+    amount: Number(r.amount),
+    occurredAt: r.occurred_at,
+    sourceId: r.source_id,
+    description: r.description,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    deletedAt: r.deleted_at,
+  };
+}
+
+export function rowToEnvelopePeriod(r: any): EnvelopePeriod {
+  return {
+    id: r.id,
+    envelopeId: r.envelope_id,
+    userId: r.user_id,
+    cycleStart: r.cycle_start,
+    cycleEnd: r.cycle_end,
+    allocatedAmount: Number(r.allocated_amount),
+    carryIn: Number(r.carry_in),
+    transfersIn: Number(r.transfers_in),
+    transfersOut: Number(r.transfers_out),
+    spent: Number(r.spent),
+    carryOut: Number(r.carry_out),
+    closedAt: r.closed_at,
   };
 }
 

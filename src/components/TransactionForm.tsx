@@ -1,10 +1,12 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import type { Envelope, IntervalUnit, TransactionType } from "@/types/domain";
+import { fromMinorUnits, toMinorUnits } from "@/lib/domain/currency";
+import type { Envelope, IntervalUnit, Transaction, TransactionType } from "@/types/domain";
 
 export interface TransactionFormValues {
-  envelopeId: string;
+  /** null = "Hors budget" : aucune enveloppe (section dédiée du cahier des charges). */
+  envelopeId: string | null;
   amount: number;
   type: TransactionType;
   occurredAt: string;
@@ -24,24 +26,40 @@ const INTERVAL_LABELS: Record<IntervalUnit, string> = {
   year: "an(s)",
 };
 
-/** Saisie d'une transaction (4.1), simple ou récurrente à fréquence libre (4.2). */
+const OUT_OF_BUDGET = "__out_of_budget__";
+
+/**
+ * Saisie d'une transaction (4.1), simple ou récurrente à fréquence libre (4.2).
+ * "Hors budget" (aucune enveloppe) et "Remboursement" (type income rattaché ou non à
+ * une enveloppe, ex: un ami qui rembourse une dépense) sont deux options indépendantes.
+ */
 export function TransactionForm({
   envelopes,
   defaultEnvelopeId,
+  initial,
   onSubmit,
   allowRecurring = true,
 }: {
   envelopes: Envelope[];
-  defaultEnvelopeId?: string;
+  defaultEnvelopeId?: string | null;
+  /** Pré-remplit le formulaire (édition d'une transaction existante). */
+  initial?: Pick<Transaction, "amount" | "type" | "occurredAt" | "description">;
   onSubmit: (values: TransactionFormValues) => Promise<void>;
   /** Masqué en édition : la récurrence se gère depuis l'écran "Transactions", pas ici. */
   allowRecurring?: boolean;
 }) {
-  const [envelopeId, setEnvelopeId] = useState(defaultEnvelopeId ?? envelopes[0]?.id ?? "");
-  const [amount, setAmount] = useState(0);
-  const [type, setType] = useState<TransactionType>("expense");
-  const [occurredAt, setOccurredAt] = useState(() => new Date().toISOString().slice(0, 10));
-  const [description, setDescription] = useState("");
+  // `null` explicite (édition d'une transaction hors budget) doit bien sélectionner
+  // "Hors budget", contrairement à `undefined` (aucun contexte fourni) qui retombe sur
+  // la première enveloppe : `??` seul confondrait les deux, d'où ce test explicite.
+  const [envelopeId, setEnvelopeId] = useState(
+    defaultEnvelopeId === undefined ? (envelopes[0]?.id ?? OUT_OF_BUDGET) : (defaultEnvelopeId ?? OUT_OF_BUDGET)
+  );
+  const [amount, setAmount] = useState(initial ? fromMinorUnits(initial.amount) : 0);
+  const [type, setType] = useState<TransactionType>(initial?.type ?? "expense");
+  const [occurredAt, setOccurredAt] = useState(
+    () => initial?.occurredAt ?? new Date().toISOString().slice(0, 10)
+  );
+  const [description, setDescription] = useState(initial?.description ?? "");
   const [recurring, setRecurring] = useState(false);
   const [intervalValue, setIntervalValue] = useState(1);
   const [intervalUnit, setIntervalUnit] = useState<IntervalUnit>("month");
@@ -53,10 +71,6 @@ export function TransactionForm({
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!envelopeId) {
-      setError("Choisissez une enveloppe.");
-      return;
-    }
     if (amount <= 0) {
       setError("Le montant doit être positif.");
       return;
@@ -64,8 +78,8 @@ export function TransactionForm({
     setSubmitting(true);
     try {
       await onSubmit({
-        envelopeId,
-        amount,
+        envelopeId: envelopeId === OUT_OF_BUDGET ? null : envelopeId,
+        amount: toMinorUnits(amount),
         type,
         occurredAt,
         description: description.trim() || null,
@@ -97,15 +111,23 @@ export function TransactionForm({
           onClick={() => setType("income")}
           className={`btn ${type === "income" ? "bg-brand-600 text-white" : "btn-secondary"}`}
         >
-          Revenu
+          Remboursement
         </button>
       </div>
+      {type === "income" && (
+        <p className="text-xs text-neutral-500">
+          Un remboursement (ex : un ami qui vous rembourse) réduit le dépensé de l&apos;enveloppe choisie et
+          compte dans votre solde réel. Pour un salaire ou une autre rentrée d&apos;argent, utilisez plutôt
+          l&apos;écran « Rentrées ».
+        </p>
+      )}
 
       <div>
         <label className="label" htmlFor="txEnvelope">
           Enveloppe
         </label>
         <select id="txEnvelope" className="input" value={envelopeId} onChange={(e) => setEnvelopeId(e.target.value)}>
+          <option value={OUT_OF_BUDGET}>Hors budget (aucune enveloppe)</option>
           {envelopes.map((e) => (
             <option key={e.id} value={e.id}>
               {e.name}

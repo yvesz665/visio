@@ -18,6 +18,9 @@ import { getDb, getOrCreateDeviceId } from "./dexie";
 import type {
   Attachment,
   Envelope,
+  EnvelopePeriod,
+  IncomeEntry,
+  IncomeSource,
   JournalEntityType,
   JournalEvent,
   JournalEventType,
@@ -35,6 +38,7 @@ import {
 } from "@/lib/domain/envelopes";
 import { computeUndoSteps, findMostRecentUndoable, assertIsMostRecent, UndoError } from "@/lib/domain/journal";
 import { computeNextRunDate } from "@/lib/domain/recurrence";
+import { convertMinorUnits } from "@/lib/domain/currency";
 import { generateId } from "@/lib/utils/id";
 
 function nowIso(): string {
@@ -267,7 +271,8 @@ export async function hardDeleteEnvelope(envelopeId: string, userId: string): Pr
 
 export interface CreateTransactionInput {
   userId: string;
-  envelopeId: string;
+  /** null = dépense/remboursement "hors budget" (aucune enveloppe). */
+  envelopeId: string | null;
   amount: number;
   type: "income" | "expense";
   occurredAt: string;
@@ -314,7 +319,7 @@ export async function createTransaction(input: CreateTransactionInput): Promise<
  */
 export async function createTransactionWithOptionalRecurrence(params: {
   userId: string;
-  envelopeId: string;
+  envelopeId: string | null;
   amount: number;
   type: "income" | "expense";
   occurredAt: string;
@@ -460,12 +465,161 @@ export async function removeAttachment(attachmentId: string): Promise<void> {
 }
 
 // ============================================================================
+// RENTRÉES D'ARGENT -- entité séparée des enveloppes (n'alimentent aucun montant alloué)
+// ============================================================================
+
+export async function createIncomeSource(params: {
+  userId: string;
+  name: string;
+  isDefault?: boolean;
+}): Promise<IncomeSource> {
+  const db = getDb();
+  return db.transaction("rw", [db.incomeSources, db.journalEvents, db.syncMeta], async () => {
+    const source: IncomeSource = {
+      id: newId(),
+      userId: params.userId,
+      name: params.name,
+      isDefault: params.isDefault ?? false,
+      createdAt: nowIso(),
+      syncStatus: "pending",
+    };
+    await db.incomeSources.add(source);
+    await logEvent({
+      eventType: "income_source.create",
+      entityType: "income_source",
+      entityId: source.id,
+      userId: params.userId,
+      payload: { ...source },
+    });
+    return source;
+  });
+}
+
+export async function updateIncomeSource(id: string, userId: string, name: string): Promise<IncomeSource> {
+  const db = getDb();
+  return db.transaction("rw", [db.incomeSources, db.journalEvents, db.syncMeta], async () => {
+    const current = await db.incomeSources.get(id);
+    if (!current) throw new Error("Source introuvable.");
+    const updated: IncomeSource = { ...current, name, syncStatus: "pending" };
+    await db.incomeSources.put(updated);
+    await logEvent({
+      eventType: "income_source.update",
+      entityType: "income_source",
+      entityId: id,
+      userId,
+      payload: { name },
+      inversePayload: { name: current.name },
+    });
+    return updated;
+  });
+}
+
+/** Refusé si des rentrées utilisent encore cette source (contrainte FK côté serveur). */
+export async function deleteIncomeSource(id: string, userId: string): Promise<void> {
+  const db = getDb();
+  await db.transaction("rw", [db.incomeSources, db.incomeEntries, db.journalEvents, db.syncMeta], async () => {
+    const current = await db.incomeSources.get(id);
+    if (!current) throw new Error("Source introuvable.");
+    const inUse = await db.incomeEntries.where("sourceId").equals(id).count();
+    if (inUse > 0) {
+      throw new Error("Cette source est utilisée par au moins une rentrée : modifiez-les d'abord.");
+    }
+    await db.incomeSources.delete(id);
+    await logEvent({
+      eventType: "income_source.delete",
+      entityType: "income_source",
+      entityId: id,
+      userId,
+      payload: {},
+      inversePayload: { ...current },
+    });
+  });
+}
+
+export async function createIncomeEntry(params: {
+  userId: string;
+  amount: number;
+  occurredAt: string;
+  sourceId: string;
+  description: string | null;
+}): Promise<IncomeEntry> {
+  const db = getDb();
+  return db.transaction("rw", [db.incomeEntries, db.journalEvents, db.syncMeta], async () => {
+    const entry: IncomeEntry = {
+      id: newId(),
+      userId: params.userId,
+      amount: params.amount,
+      occurredAt: params.occurredAt,
+      sourceId: params.sourceId,
+      description: params.description,
+      createdAt: nowIso(),
+      updatedAt: nowIso(),
+      deletedAt: null,
+      syncStatus: "pending",
+    };
+    await db.incomeEntries.add(entry);
+    await logEvent({
+      eventType: "income_entry.create",
+      entityType: "income_entry",
+      entityId: entry.id,
+      userId: params.userId,
+      payload: { ...entry },
+    });
+    return entry;
+  });
+}
+
+export async function updateIncomeEntry(
+  id: string,
+  userId: string,
+  changes: Partial<Pick<IncomeEntry, "amount" | "occurredAt" | "sourceId" | "description">>
+): Promise<IncomeEntry> {
+  const db = getDb();
+  return db.transaction("rw", [db.incomeEntries, db.journalEvents, db.syncMeta], async () => {
+    const current = await db.incomeEntries.get(id);
+    if (!current) throw new Error("Rentrée introuvable.");
+    const before: Record<string, unknown> = {};
+    for (const key of Object.keys(changes) as (keyof typeof changes)[]) {
+      before[key] = current[key];
+    }
+    const updated: IncomeEntry = { ...current, ...changes, updatedAt: nowIso(), syncStatus: "pending" };
+    await db.incomeEntries.put(updated);
+    await logEvent({
+      eventType: "income_entry.update",
+      entityType: "income_entry",
+      entityId: id,
+      userId,
+      payload: { ...changes },
+      inversePayload: before,
+    });
+    return updated;
+  });
+}
+
+export async function deleteIncomeEntry(id: string, userId: string): Promise<void> {
+  const db = getDb();
+  await db.transaction("rw", [db.incomeEntries, db.journalEvents, db.syncMeta], async () => {
+    const current = await db.incomeEntries.get(id);
+    if (!current) throw new Error("Rentrée introuvable.");
+    await db.incomeEntries.put({ ...current, deletedAt: nowIso(), syncStatus: "pending" });
+    await logEvent({
+      eventType: "income_entry.delete",
+      entityType: "income_entry",
+      entityId: id,
+      userId,
+      payload: {},
+      inversePayload: { deletedAt: null },
+    });
+  });
+}
+
+// ============================================================================
 // RÈGLES DE RÉCURRENCE (4.2)
 // ============================================================================
 
 export interface CreateRecurrenceInput {
   userId: string;
-  envelopeId: string;
+  envelopeId: string | null;
   amount: number;
   type: "income" | "expense";
   description: string | null;
@@ -569,6 +723,13 @@ export async function deleteRecurrenceRule(ruleId: string, userId: string): Prom
 // ============================================================================
 // TRANSFERTS (3.3)
 // ============================================================================
+// Un transfert NE modifie JAMAIS allocated_amount : il ne fait que déplacer du
+// disponible entre les périodes en cours des deux enveloppes (transfers_in /
+// transfers_out, voir src/lib/domain/periods.ts et supabase/migrations/0003_*.sql). Sur
+// une enveloppe récurrente, changer allocated_amount changerait aussi toutes les
+// périodes futures (non voulu) et pourrait casser la règle "somme des enfants ≤
+// parent" ; comme allocated_amount reste intact, aucune des deux ne peut plus se
+// produire, et plus aucune validation d'allocation n'est nécessaire ici.
 
 export async function createTransfer(params: {
   userId: string;
@@ -576,37 +737,14 @@ export async function createTransfer(params: {
   toEnvelopeId: string;
   amount: number;
   note?: string | null;
+  occurredAt?: string;
 }): Promise<Transfer> {
   const db = getDb();
   return db.transaction("rw", [db.envelopes, db.transfers, db.journalEvents, db.syncMeta], async () => {
     const from = await db.envelopes.get(params.fromEnvelopeId);
     const to = await db.envelopes.get(params.toEnvelopeId);
     if (!from || !to) throw new Error("Enveloppe source ou destination introuvable.");
-
-    const fromNewAmount = from.allocatedAmount - params.amount;
-    if (fromNewAmount < 0) {
-      throw new AllocationError("allocation_exceeds_new_amount", "Solde insuffisant sur l'enveloppe source.");
-    }
-    const fromChildren = await db.envelopes
-      .where("parentId")
-      .equals(from.id)
-      .filter((e) => e.status === "active")
-      .toArray();
-    assertNewAmountCoversChildren(fromChildren, fromNewAmount);
-
-    const toNewAmount = to.allocatedAmount + params.amount;
-    if (to.parentId) {
-      const toParent = await db.envelopes.get(to.parentId);
-      const toSiblings = await db.envelopes
-        .where("parentId")
-        .equals(to.parentId)
-        .filter((e) => e.status === "active" && e.id !== to.id)
-        .toArray();
-      assertAllocationFits(toSiblings, toNewAmount, toParent);
-    }
-
-    await db.envelopes.put({ ...from, allocatedAmount: fromNewAmount, updatedAt: nowIso(), syncStatus: "pending" });
-    await db.envelopes.put({ ...to, allocatedAmount: toNewAmount, updatedAt: nowIso(), syncStatus: "pending" });
+    if (params.amount <= 0) throw new Error("Le montant du transfert doit être positif.");
 
     const transfer: Transfer = {
       id: newId(),
@@ -615,7 +753,7 @@ export async function createTransfer(params: {
       toEnvelopeId: to.id,
       amount: params.amount,
       note: params.note ?? null,
-      occurredAt: nowIso(),
+      occurredAt: params.occurredAt ?? nowIso(),
       createdAt: nowIso(),
       syncStatus: "pending",
     };
@@ -625,13 +763,7 @@ export async function createTransfer(params: {
       entityType: "transfer",
       entityId: transfer.id,
       userId: params.userId,
-      payload: {
-        fromEnvelopeId: from.id,
-        toEnvelopeId: to.id,
-        amount: params.amount,
-        fromAllocatedBefore: from.allocatedAmount,
-        toAllocatedBefore: to.allocatedAmount,
-      },
+      payload: { ...transfer },
     });
     return transfer;
   });
@@ -719,21 +851,37 @@ export async function changeCurrency(params: {
   const db = getDb();
   await db.transaction(
     "rw",
-    [db.profiles, db.envelopes, db.transactions, db.recurrenceRules, db.journalEvents, db.syncMeta],
+    [
+      db.profiles,
+      db.envelopes,
+      db.transactions,
+      db.recurrenceRules,
+      db.transfers,
+      db.incomeEntries,
+      db.envelopePeriods,
+      db.journalEvents,
+      db.syncMeta,
+    ],
     async () => {
       const envelopes = await db.envelopes.where("userId").equals(params.userId).toArray();
       const transactions = await db.transactions.where("userId").equals(params.userId).toArray();
       const rules = await db.recurrenceRules.where("userId").equals(params.userId).toArray();
+      const transfers = await db.transfers.where("userId").equals(params.userId).toArray();
+      const incomeEntries = await db.incomeEntries.where("userId").equals(params.userId).toArray();
+      const periods = await db.envelopePeriods.where("userId").equals(params.userId).toArray();
 
       const prevEnvelopeAmounts: Record<string, number> = {};
       const prevTransactionAmounts: Record<string, number> = {};
       const prevRecurrenceAmounts: Record<string, number> = {};
 
+      // Seule fonction d'arrondi utilisée ici (convertMinorUnits) : mêmes valeurs que
+      // le calcul serveur (apply_currency_conversion), qui reste l'autorité une fois
+      // synchronisé.
       for (const e of envelopes) {
         prevEnvelopeAmounts[e.id] = e.allocatedAmount;
         await db.envelopes.put({
           ...e,
-          allocatedAmount: Math.round(e.allocatedAmount * params.rate * 100) / 100,
+          allocatedAmount: convertMinorUnits(e.allocatedAmount, params.rate),
           syncStatus: "pending",
         });
       }
@@ -741,7 +889,7 @@ export async function changeCurrency(params: {
         prevTransactionAmounts[t.id] = t.amount;
         await db.transactions.put({
           ...t,
-          amount: Math.round(t.amount * params.rate * 100) / 100,
+          amount: convertMinorUnits(t.amount, params.rate),
           syncStatus: "pending",
         });
       }
@@ -749,8 +897,29 @@ export async function changeCurrency(params: {
         prevRecurrenceAmounts[r.id] = r.amount;
         await db.recurrenceRules.put({
           ...r,
-          amount: Math.round(r.amount * params.rate * 100) / 100,
+          amount: convertMinorUnits(r.amount, params.rate),
           syncStatus: "pending",
+        });
+      }
+      for (const tr of transfers) {
+        await db.transfers.put({ ...tr, amount: convertMinorUnits(tr.amount, params.rate), syncStatus: "pending" });
+      }
+      for (const inc of incomeEntries) {
+        await db.incomeEntries.put({
+          ...inc,
+          amount: convertMinorUnits(inc.amount, params.rate),
+          syncStatus: "pending",
+        });
+      }
+      for (const p of periods) {
+        await db.envelopePeriods.put({
+          ...p,
+          allocatedAmount: convertMinorUnits(p.allocatedAmount, params.rate),
+          carryIn: convertMinorUnits(p.carryIn, params.rate),
+          transfersIn: convertMinorUnits(p.transfersIn, params.rate),
+          transfersOut: convertMinorUnits(p.transfersOut, params.rate),
+          spent: convertMinorUnits(p.spent, params.rate),
+          carryOut: convertMinorUnits(p.carryOut, params.rate),
         });
       }
 
@@ -812,6 +981,65 @@ export async function updateProfile(
 }
 
 // ============================================================================
+// LECTURE — report de période (pour l'affichage, voir hooks/useVisioData.ts)
+// ============================================================================
+
+/**
+ * Report reçu par chaque enveloppe : le `carryOut` de sa dernière période close
+ * connue localement (0 si aucune, par ex. toute première période ou enveloppe pas
+ * encore synchronisée). Les périodes closes ne sont produites que par le serveur (voir
+ * supabase/migrations/0003_*.sql) ; ce sont donc toujours des valeurs autoritaires une
+ * fois présentes en local, jamais "provisoires".
+ */
+export async function getCarryInMap(userId: string): Promise<Map<string, number>> {
+  const db = getDb();
+  const periods = await db.envelopePeriods.where("userId").equals(userId).toArray();
+  const latestByEnvelope = new Map<string, EnvelopePeriod>();
+  for (const p of periods) {
+    const existing = latestByEnvelope.get(p.envelopeId);
+    if (!existing || p.cycleEnd > existing.cycleEnd) {
+      latestByEnvelope.set(p.envelopeId, p);
+    }
+  }
+  const carryIn = new Map<string, number>();
+  for (const [envelopeId, period] of latestByEnvelope) {
+    carryIn.set(envelopeId, period.carryOut);
+  }
+  return carryIn;
+}
+
+/**
+ * Ids d'enveloppes dont le disponible affiché repose sur des mutations locales pas
+ * encore synchronisées (transactions/transferts en attente) : sert à marquer le calcul
+ * "provisoire" tant que le serveur n'a pas confirmé (10.2). Les périodes CLOSES ne sont
+ * jamais provisoires (elles ne peuvent venir que du serveur) ; seul le disponible de la
+ * période EN COURS peut l'être.
+ */
+export async function getProvisionalEnvelopeIds(userId: string): Promise<Set<string>> {
+  const db = getDb();
+  const pendingEvents = await db.journalEvents
+    .where("userId")
+    .equals(userId)
+    .filter((e) => e.syncStatus === "pending" && !e.isUndone)
+    .toArray();
+
+  const ids = new Set<string>();
+  for (const e of pendingEvents) {
+    if (e.entityType === "transaction") {
+      const envelopeId = (e.payload as { envelopeId?: string | null }).envelopeId;
+      if (envelopeId) ids.add(envelopeId);
+    } else if (e.entityType === "transfer") {
+      const p = e.payload as { fromEnvelopeId?: string; toEnvelopeId?: string };
+      if (p.fromEnvelopeId) ids.add(p.fromEnvelopeId);
+      if (p.toEnvelopeId) ids.add(p.toEnvelopeId);
+    } else if (e.entityType === "envelope") {
+      ids.add(e.entityId);
+    }
+  }
+  return ids;
+}
+
+// ============================================================================
 // ANNULATION (5) — ne porte jamais que sur la toute dernière action
 // ============================================================================
 
@@ -826,6 +1054,8 @@ export async function undoLastAction(userId: string): Promise<JournalEvent | nul
       db.pendingRecurrences,
       db.transfers,
       db.profiles,
+      db.incomeEntries,
+      db.incomeSources,
       db.journalEvents,
       db.syncMeta,
     ],
@@ -865,6 +1095,10 @@ async function deleteFromTable(table: string, id: string): Promise<void> {
       return void (await db.pendingRecurrences.delete(id));
     case "profiles":
       return void (await db.profiles.delete(id));
+    case "income_entries":
+      return void (await db.incomeEntries.delete(id));
+    case "income_sources":
+      return void (await db.incomeSources.delete(id));
   }
 }
 
@@ -903,6 +1137,20 @@ async function upsertIntoTable(table: string, id: string, data: Record<string, u
       const current = await db.profiles.get(id);
       const merged = current ? { ...current, ...data } : ({ id, ...data } as Profile);
       return void (await db.profiles.put(merged));
+    }
+    case "income_entries": {
+      const current = await db.incomeEntries.get(id);
+      const merged = current
+        ? { ...current, ...data, syncStatus: "pending" as const }
+        : ({ id, ...data } as IncomeEntry);
+      return void (await db.incomeEntries.put(merged));
+    }
+    case "income_sources": {
+      const current = await db.incomeSources.get(id);
+      const merged = current
+        ? { ...current, ...data, syncStatus: "pending" as const }
+        : ({ id, ...data } as IncomeSource);
+      return void (await db.incomeSources.put(merged));
     }
   }
 }

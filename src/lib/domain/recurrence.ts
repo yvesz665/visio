@@ -6,6 +6,31 @@
 
 import type { IntervalUnit } from "@/types/domain";
 
+/**
+ * Convertit un instant réel (ex: `new Date()`) en "aujourd'hui" tel que vu dans le
+ * fuseau horaire `timeZone` (profil utilisateur, "Africa/Ouagadougou" par défaut),
+ * représenté comme une date UTC-minuit portant ce même jour calendaire. Toutes les
+ * fonctions de cycle ci-dessous manipulent ensuite des jours calendaires via les
+ * méthodes UTC de `Date` : leur passer un instant réel non converti (ex: un `new Date()`
+ * brut côté serveur, en UTC) déciderait des bornes de cycle avec le mauvais jour pour un
+ * utilisateur dans un fuseau différent, notamment autour de minuit.
+ */
+export function todayInTimeZone(instant: Date, timeZone: string): Date {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(instant);
+    const get = (type: string) => Number(parts.find((p) => p.type === type)?.value ?? "0");
+    return new Date(Date.UTC(get("year"), get("month") - 1, get("day")));
+  } catch {
+    // Fuseau invalide/non reconnu : repli sur UTC plutôt que de faire planter le calcul.
+    return new Date(Date.UTC(instant.getUTCFullYear(), instant.getUTCMonth(), instant.getUTCDate()));
+  }
+}
+
 /** Ajoute un intervalle libre (ex: 45 jours, 2 semaines, 1 mois, 1 an) à une date. */
 export function addInterval(date: Date, value: number, unit: IntervalUnit): Date {
   const d = new Date(date.getTime());

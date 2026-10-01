@@ -14,7 +14,7 @@ import {
   Cell,
   Legend,
 } from "recharts";
-import { useEnvelopeTree, useProfile, useTransactions } from "@/hooks/useVisioData";
+import { useEnvelopeTree, useProfile, useSoldeReel, useTransactions } from "@/hooks/useVisioData";
 import { EnvelopeTreeView } from "@/components/EnvelopeTreeView";
 import { formatMoney } from "@/lib/domain/currency";
 import { flattenSummary } from "@/lib/domain/envelopes";
@@ -24,6 +24,7 @@ export default function DashboardPage() {
   const profile = useProfile();
   const tree = useEnvelopeTree();
   const transactions = useTransactions(5000);
+  const soldeReel = useSoldeReel();
 
   const currency = profile?.defaultCurrency ?? "XOF";
 
@@ -67,10 +68,39 @@ export default function DashboardPage() {
           tone={tree.isOverBudget ? "danger" : "default"}
         />
         <StatCard
-          label="Restant"
+          label="Disponible"
           value={formatMoney(tree.remaining, currency)}
           tone={tree.remaining < 0 ? "danger" : "success"}
         />
+      </section>
+
+      <section className="card">
+        <h2 className="mb-3 text-sm font-semibold text-neutral-700">Solde réel</h2>
+        <p className="mb-3 text-xs text-neutral-500">
+          Rentrées − (dépenses confirmées − remboursements), hors budget inclus.
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <p className="text-xs text-neutral-400">Sur le cycle en cours</p>
+            <p
+              className={`text-lg font-semibold ${
+                soldeReel && soldeReel.period < 0 ? "text-red-600" : "text-brand-700"
+              }`}
+            >
+              {soldeReel ? formatMoney(soldeReel.period, currency) : "…"}
+            </p>
+          </div>
+          <div>
+            <p className="text-xs text-neutral-400">Cumulé (depuis le début)</p>
+            <p
+              className={`text-lg font-semibold ${
+                soldeReel && soldeReel.cumulative < 0 ? "text-red-600" : "text-brand-700"
+              }`}
+            >
+              {soldeReel ? formatMoney(soldeReel.cumulative, currency) : "…"}
+            </p>
+          </div>
+        </div>
       </section>
 
       {alerts.length > 0 && (
@@ -122,7 +152,7 @@ export default function DashboardPage() {
                 <YAxis fontSize={11} />
                 <Tooltip formatter={(v: number) => formatMoney(v, currency)} />
                 <Legend />
-                <Bar dataKey="income" name="Revenus" fill="#22a468" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="income" name="Remboursements" fill="#22a468" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="expense" name="Dépenses" fill="#dc2626" radius={[4, 4, 0, 0]} />
                 <Bar dataKey="allocated" name="Alloué (actuel)" fill="#94a3b8" radius={[4, 4, 0, 0]} />
               </BarChart>

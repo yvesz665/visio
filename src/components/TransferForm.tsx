@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent } from "react";
 import type { Envelope } from "@/types/domain";
-import { AllocationError } from "@/lib/domain/envelopes";
+import { toMinorUnits } from "@/lib/domain/currency";
 
 /** Transfert d'un montant alloué d'une enveloppe vers une autre (3.3). */
 export function TransferForm({
@@ -35,9 +35,9 @@ export function TransferForm({
     }
     setSubmitting(true);
     try {
-      await onSubmit({ toEnvelopeId, amount, note: note.trim() || null });
+      await onSubmit({ toEnvelopeId, amount: toMinorUnits(amount), note: note.trim() || null });
     } catch (err) {
-      setError(err instanceof AllocationError ? err.message : "Une erreur est survenue.");
+      setError(err instanceof Error ? err.message : "Une erreur est survenue.");
     } finally {
       setSubmitting(false);
     }
@@ -47,6 +47,10 @@ export function TransferForm({
     <form onSubmit={handleSubmit} className="space-y-4">
       <p className="text-sm text-neutral-600">
         Depuis <span className="font-medium">{fromEnvelope.name}</span>
+      </p>
+      <p className="text-xs text-neutral-500">
+        Ce transfert ne change pas les montants alloués : il affecte seulement le disponible du cycle en
+        cours des deux enveloppes. Son effet sur les cycles suivants passe uniquement par le report.
       </p>
       <div>
         <label className="label" htmlFor="toEnvelope">

@@ -12,6 +12,7 @@ import {
   Download,
   WifiOff,
   LogOut,
+  PiggyBank,
 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useOnlineStatus } from "@/hooks/useOnlineStatus";
@@ -23,6 +24,7 @@ const NAV_ITEMS = [
   { href: "/dashboard", label: "Tableau de bord", icon: LayoutDashboard },
   { href: "/envelopes", label: "Enveloppes", icon: Wallet },
   { href: "/transactions", label: "Transactions", icon: Receipt },
+  { href: "/incomes", label: "Rentrées", icon: PiggyBank },
   { href: "/activity", label: "Activité", icon: History },
   { href: "/export", label: "Export", icon: Download },
   { href: "/settings", label: "Réglages", icon: Settings },

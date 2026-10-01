@@ -19,6 +19,9 @@
 import { getDb, getSyncCursor, setSyncCursor } from "@/lib/db/dexie";
 import type {
   Envelope,
+  EnvelopePeriod,
+  IncomeEntry,
+  IncomeSource,
   JournalEvent,
   PendingRecurrence,
   Profile,
@@ -43,6 +46,9 @@ export interface PullResponse {
     pendingRecurrences?: PendingRecurrence[];
     transfers?: Transfer[];
     profile?: Profile;
+    incomeSources?: IncomeSource[];
+    incomeEntries?: IncomeEntry[];
+    envelopePeriods?: EnvelopePeriod[];
   };
   deletions?: {
     envelopes?: string[];
@@ -172,6 +178,9 @@ async function pullRemoteEvents(): Promise<void> {
       db.pendingRecurrences,
       db.transfers,
       db.profiles,
+      db.incomeSources,
+      db.incomeEntries,
+      db.envelopePeriods,
       db.journalEvents,
     ],
     async () => {
@@ -181,6 +190,9 @@ async function pullRemoteEvents(): Promise<void> {
       for (const p of data.snapshots.pendingRecurrences ?? []) await db.pendingRecurrences.put(p);
       for (const tr of data.snapshots.transfers ?? []) await db.transfers.put(tr);
       if (data.snapshots.profile) await db.profiles.put(data.snapshots.profile);
+      for (const s of data.snapshots.incomeSources ?? []) await db.incomeSources.put(s);
+      for (const inc of data.snapshots.incomeEntries ?? []) await db.incomeEntries.put(inc);
+      for (const per of data.snapshots.envelopePeriods ?? []) await db.envelopePeriods.put(per);
 
       for (const id of data.deletions?.envelopes ?? []) await db.envelopes.delete(id);
       for (const id of data.deletions?.recurrenceRules ?? []) await db.recurrenceRules.delete(id);

@@ -17,13 +17,13 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceRoleClient } from "@/lib/supabase/server";
-import { rowToEnvelope, rowToProfile, rowToRecurrenceRule, rowToTransaction } from "@/lib/supabase/mappers";
+import { rowToEnvelope, rowToProfile, rowToRecurrenceRule, rowToTransaction, rowToTransfer } from "@/lib/supabase/mappers";
 import { buildEnvelopeTree, findSummaryById } from "@/lib/domain/envelopes";
-import { currentCycleEnd, currentCycleStart, isWithinCycle, computeNextRunDate, isDue } from "@/lib/domain/recurrence";
+import { computeNextRunDate, isDue, todayInTimeZone } from "@/lib/domain/recurrence";
 import { hasEnoughBudgetForAutoRecurrence } from "@/lib/domain/transactions";
 import { sendPushToUser } from "@/lib/notifications/push-server";
 import { checkThresholdAndNotify } from "@/lib/notifications/threshold-check";
-import type { Transaction } from "@/types/domain";
+import { recalculatePeriodsForEnvelopeAndAncestors } from "@/lib/supabase/period-recalc";
 
 const MAX_OCCURRENCES_PER_RULE = 12; // filet de sécurité si une règle n'a pas tourné depuis longtemps
 
@@ -77,13 +77,21 @@ export async function GET(req: NextRequest) {
     await supabase.from("recurrence_rules").update({ next_run_date: cursor }).eq("id", rule.id);
   }
 
+  // Clôture quotidienne de toutes les périodes échues, tous utilisateurs (en plus du
+  // rattrapage paresseux déclenché à chaque /api/sync/pull) : idempotente, un échec ici
+  // ne fausse jamais un report déjà calculé, elle ne fait que compléter ce qui manque.
+  const { error: closeError } = await supabase.rpc("close_all_due_periods", { p_user_id: null });
+  if (closeError) {
+    console.error("[cron] échec de la clôture des périodes", closeError.message);
+  }
+
   return NextResponse.json({ processed: results.length, results });
 }
 
 async function processOccurrence(
   supabase: ReturnType<typeof createServiceRoleClient>,
   userId: string,
-  envelopeId: string,
+  envelopeId: string | null,
   occurrence: {
     ruleId: string;
     amount: number;
@@ -92,33 +100,52 @@ async function processOccurrence(
     scheduledDate: string;
   }
 ): Promise<"created" | "pending"> {
-  const [{ data: profileRow }, { data: envelopeRows }, { data: txRows }] = await Promise.all([
-    supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
-    supabase.from("envelopes").select("*").eq("user_id", userId),
-    supabase.from("transactions").select("*").eq("user_id", userId).is("deleted_at", null),
-  ]);
+  const hasBudget = await (async () => {
+    // Hors budget = pas de plafond à vérifier, comme une saisie manuelle hors budget.
+    if (!envelopeId || occurrence.type === "income") return true;
 
-  const hasBudget = (() => {
-    if (occurrence.type === "income" || !profileRow || !envelopeRows) return true;
+    const [{ data: profileRow }, { data: envelopeRows }, { data: txRows }, { data: transferRows }, { data: periodRows }] =
+      await Promise.all([
+        supabase.from("profiles").select("*").eq("id", userId).maybeSingle(),
+        supabase.from("envelopes").select("*").eq("user_id", userId),
+        supabase.from("transactions").select("*").eq("user_id", userId).is("deleted_at", null),
+        supabase.from("transfers").select("*").eq("user_id", userId),
+        supabase.from("envelope_periods").select("*").eq("user_id", userId),
+      ]);
+    if (!profileRow || !envelopeRows) return true;
+
     const profile = rowToProfile(profileRow);
     const envelopes = envelopeRows.map(rowToEnvelope);
-    const allTx = (txRows ?? []).map(rowToTransaction);
-    const now = new Date();
-    const cycleStart = currentCycleStart(now, profile.cycleAnchorDay);
-    const cycleEnd = currentCycleEnd(now, profile.cycleAnchorDay);
-    const txByEnvelope = new Map<string, Transaction[]>();
-    for (const tx of allTx) {
-      if (!isWithinCycle(new Date(tx.occurredAt), cycleStart, cycleEnd)) continue;
-      const list = txByEnvelope.get(tx.envelopeId) ?? [];
-      list.push(tx);
-      txByEnvelope.set(tx.envelopeId, list);
+    const transactions = (txRows ?? []).map(rowToTransaction);
+    const transfers = (transferRows ?? []).map(rowToTransfer);
+
+    const carryInByEnvelope = new Map<string, number>();
+    const latestCycleEndByEnvelope = new Map<string, string>();
+    for (const row of periodRows ?? []) {
+      const eid = row.envelope_id as string;
+      const cycleEnd = row.cycle_end as string;
+      if (!latestCycleEndByEnvelope.has(eid) || cycleEnd > latestCycleEndByEnvelope.get(eid)!) {
+        latestCycleEndByEnvelope.set(eid, cycleEnd);
+        carryInByEnvelope.set(eid, Number(row.carry_out));
+      }
     }
-    const tree = buildEnvelopeTree(envelopes, txByEnvelope, profile.alertThresholdPct);
+
+    const tree = buildEnvelopeTree({
+      envelopes,
+      transactions,
+      transfers,
+      carryInByEnvelope,
+      globalCycleAnchorDay: profile.cycleAnchorDay,
+      today: todayInTimeZone(new Date(), profile.timezone),
+      defaultThresholdPct: profile.alertThresholdPct,
+    });
     if (!tree) return false;
     const summary = findSummaryById(tree, envelopeId);
     if (!summary) return false;
-    const remainingDirect = summary.availableForDirect - summary.directSpent;
-    return hasEnoughBudgetForAutoRecurrence(remainingDirect, occurrence.amount, occurrence.type);
+    // Le disponible (report + transferts déjà inclus) fait foi, pas seulement
+    // l'allocation directe : une enveloppe en report positif peut couvrir une
+    // dépense même si son allocation nominale seule ne suffirait pas.
+    return hasEnoughBudgetForAutoRecurrence(summary.remaining, occurrence.amount, occurrence.type);
   })();
 
   if (hasBudget) {
@@ -154,10 +181,15 @@ async function processOccurrence(
       client_created_at: new Date().toISOString(),
       status: "applied",
     });
-    await checkThresholdAndNotify(supabase, userId, envelopeId, {
-      amount: occurrence.amount,
-      type: occurrence.type,
-    });
+    if (envelopeId) {
+      await checkThresholdAndNotify(supabase, userId, envelopeId, {
+        amount: occurrence.amount,
+        type: occurrence.type,
+      });
+    }
+    // L'échéance peut concerner une date passée (rattrapage) qui tombe dans une
+    // période déjà close : on recalcule pour ne jamais fausser le report.
+    await recalculatePeriodsForEnvelopeAndAncestors(supabase, userId, envelopeId, occurrence.scheduledDate);
     return "created";
   }
 

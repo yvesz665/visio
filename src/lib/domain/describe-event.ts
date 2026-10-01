@@ -34,6 +34,18 @@ export function describeJournalEvent(event: JournalEvent): string {
       return `Changement de devise (${p.fromCurrency ?? "?"} → ${p.toCurrency ?? "?"})`;
     case "profile.update":
       return "Modification des réglages du compte";
+    case "income_entry.create":
+      return "Ajout d'une rentrée d'argent";
+    case "income_entry.update":
+      return "Modification d'une rentrée d'argent";
+    case "income_entry.delete":
+      return "Suppression d'une rentrée d'argent";
+    case "income_source.create":
+      return `Création de la source « ${p.name ?? ""} »`;
+    case "income_source.update":
+      return "Modification d'une source de rentrée";
+    case "income_source.delete":
+      return "Suppression d'une source de rentrée";
     default:
       return event.eventType;
   }

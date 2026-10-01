@@ -87,9 +87,15 @@ describe("buildEnvelopeTree", () => {
       updatedAt: "2026-01-05T00:00:00.000Z",
       deletedAt: null,
     };
-    const byEnvelope = new Map([["loisirs", [tx]]]);
-
-    const tree = buildEnvelopeTree(envelopes, byEnvelope, 80);
+    const tree = buildEnvelopeTree({
+      envelopes,
+      transactions: [tx],
+      transfers: [],
+      carryInByEnvelope: new Map(),
+      globalCycleAnchorDay: 1,
+      today: new Date("2026-01-05T00:00:00.000Z"),
+      defaultThresholdPct: 80,
+    });
     expect(tree?.subtreeSpent).toBe(50); // remonte jusqu'à la racine
     expect(tree?.children[0]?.subtreeSpent).toBe(50);
     expect(tree?.children[0]?.remaining).toBe(150);
@@ -110,7 +116,15 @@ describe("buildEnvelopeTree", () => {
       updatedAt: "2026-01-05T00:00:00.000Z",
       deletedAt: null,
     };
-    const tree = buildEnvelopeTree([root], new Map([["root", [tx]]]), 80);
+    const tree = buildEnvelopeTree({
+      envelopes: [root],
+      transactions: [tx],
+      transfers: [],
+      carryInByEnvelope: new Map(),
+      globalCycleAnchorDay: 1,
+      today: new Date("2026-01-05T00:00:00.000Z"),
+      defaultThresholdPct: 80,
+    });
     expect(tree?.isOverBudget).toBe(true);
   });
 });

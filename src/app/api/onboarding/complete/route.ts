@@ -9,13 +9,20 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { createServerClientFromCookies } from "@/lib/supabase/server";
-import { envelopeToRow, profileToRow, rowToEnvelope, rowToProfile } from "@/lib/supabase/mappers";
-import type { Envelope, Profile } from "@/types/domain";
+import {
+  envelopeToRow,
+  incomeSourceToRow,
+  profileToRow,
+  rowToEnvelope,
+  rowToProfile,
+} from "@/lib/supabase/mappers";
+import type { Envelope, IncomeSource, Profile } from "@/types/domain";
 
 interface OnboardingBody {
   currency: string;
   cycleAnchorDay: number;
   alertThresholdPct: number;
+  timezone?: string;
   rootEnvelope: { id: string; name: string; color: string; icon: string; allocatedAmount: number };
   initialEnvelopes: Array<{
     id: string;
@@ -25,6 +32,9 @@ interface OnboardingBody {
     allocatedAmount: number;
   }>;
 }
+
+/** Liste par défaut des sources de rentrées, modifiable ensuite par l'utilisateur. */
+const DEFAULT_INCOME_SOURCE_NAMES = ["Bourse", "Famille", "Job", "Autre"];
 
 export async function POST(req: NextRequest) {
   const supabase = await createServerClientFromCookies();
@@ -70,6 +80,7 @@ export async function POST(req: NextRequest) {
     defaultCurrency: body.currency,
     cycleAnchorDay: body.cycleAnchorDay,
     alertThresholdPct: body.alertThresholdPct,
+    timezone: body.timezone || "Africa/Ouagadougou",
     onboardingCompleted: true,
     createdAt: now,
     updatedAt: now,
@@ -80,6 +91,21 @@ export async function POST(req: NextRequest) {
     .upsert(profileToRow(profile), { onConflict: "id" });
   if (profileError) {
     return NextResponse.json({ error: profileError.message }, { status: 400 });
+  }
+
+  // Sources de rentrées par défaut (2), modifiables ensuite par l'utilisateur.
+  const incomeSources: IncomeSource[] = DEFAULT_INCOME_SOURCE_NAMES.map((name) => ({
+    id: crypto.randomUUID(),
+    userId: user.id,
+    name,
+    isDefault: true,
+    createdAt: now,
+  }));
+  const { error: sourcesError } = await supabase
+    .from("income_sources")
+    .upsert(incomeSources.map(incomeSourceToRow), { onConflict: "id" });
+  if (sourcesError) {
+    return NextResponse.json({ error: sourcesError.message }, { status: 400 });
   }
 
   const root: Envelope = {
@@ -140,5 +166,5 @@ export async function POST(req: NextRequest) {
     createdEnvelopes.push(envelope);
   }
 
-  return NextResponse.json({ profile, envelopes: createdEnvelopes });
+  return NextResponse.json({ profile, envelopes: createdEnvelopes, incomeSources });
 }

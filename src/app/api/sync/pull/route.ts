@@ -20,6 +20,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createServerClientFromBearerToken } from "@/lib/supabase/server";
 import {
   rowToEnvelope,
+  rowToEnvelopePeriod,
+  rowToIncomeEntry,
+  rowToIncomeSource,
   rowToJournalEvent,
   rowToPendingRecurrence,
   rowToProfile,
@@ -51,6 +54,12 @@ export async function GET(req: NextRequest) {
   const sinceParam = Number(req.nextUrl.searchParams.get("since") ?? "0");
   const since = Number.isFinite(sinceParam) ? sinceParam : 0;
   const isFullBootstrap = since <= 0;
+
+  // Clôture en rattrapage AVANT toute lecture : toute période échue mais pas encore
+  // close est close ici, dans l'ordre, de façon idempotente (voir 0003_*.sql). Ainsi la
+  // lecture reflète toujours des reports à jour, même si le cron quotidien a échoué ou
+  // n'est pas encore passé depuis la dernière échéance.
+  await supabase.rpc("close_all_due_periods", { p_user_id: user.id });
 
   const { data: eventRows, error: eventsError } = await supabase
     .from("journal_events")
@@ -89,21 +98,48 @@ export async function GET(req: NextRequest) {
     .maybeSingle()
     .then(({ data }) => (data ? rowToProfile(data) : undefined));
 
+  // Les périodes closes (report) ne sont jamais produites par un événement de journal
+  // (elles viennent uniquement du serveur, close_envelope_period/recalculate_periods_from) :
+  // on les récupère systématiquement en entier, comme le profil, dans les deux branches.
+  const envelopePeriodsPromise = fetchAll(supabase, "envelope_periods", user.id, rowToEnvelopePeriod);
+
   if (isFullBootstrap) {
-    const [envelopes, transactions, recurrenceRules, pendingRecurrences, transfers, profile] =
-      await Promise.all([
-        fetchAll(supabase, "envelopes", user.id, rowToEnvelope),
-        fetchAll(supabase, "transactions", user.id, rowToTransaction),
-        fetchAll(supabase, "recurrence_rules", user.id, rowToRecurrenceRule),
-        fetchAll(supabase, "pending_recurrences", user.id, rowToPendingRecurrence),
-        fetchAll(supabase, "transfers", user.id, rowToTransfer),
-        profilePromise,
-      ]);
+    const [
+      envelopes,
+      transactions,
+      recurrenceRules,
+      pendingRecurrences,
+      transfers,
+      profile,
+      incomeSources,
+      incomeEntries,
+      envelopePeriods,
+    ] = await Promise.all([
+      fetchAll(supabase, "envelopes", user.id, rowToEnvelope),
+      fetchAll(supabase, "transactions", user.id, rowToTransaction),
+      fetchAll(supabase, "recurrence_rules", user.id, rowToRecurrenceRule),
+      fetchAll(supabase, "pending_recurrences", user.id, rowToPendingRecurrence),
+      fetchAll(supabase, "transfers", user.id, rowToTransfer),
+      profilePromise,
+      fetchAll(supabase, "income_sources", user.id, rowToIncomeSource),
+      fetchAll(supabase, "income_entries", user.id, rowToIncomeEntry),
+      envelopePeriodsPromise,
+    ]);
 
     return NextResponse.json({
       events,
       cursor,
-      snapshots: { envelopes, transactions, recurrenceRules, pendingRecurrences, transfers, profile },
+      snapshots: {
+        envelopes,
+        transactions,
+        recurrenceRules,
+        pendingRecurrences,
+        transfers,
+        profile,
+        incomeSources,
+        incomeEntries,
+        envelopePeriods,
+      },
       deletions: {},
     });
   }
@@ -114,6 +150,8 @@ export async function GET(req: NextRequest) {
     transfer: new Set(),
     recurrence_rule: new Set(),
     pending_recurrence: new Set(),
+    income_entry: new Set(),
+    income_source: new Set(),
     profile: new Set(),
   };
   for (const e of events) {
@@ -127,6 +165,9 @@ export async function GET(req: NextRequest) {
     pendingRecurrencesFromEvents,
     transfers,
     profile,
+    incomeSources,
+    incomeEntries,
+    envelopePeriods,
     awaitingConfirmation,
   ] = await Promise.all([
     fetchByIds(supabase, "envelopes", idsByType.envelope, rowToEnvelope),
@@ -135,6 +176,9 @@ export async function GET(req: NextRequest) {
     fetchByIds(supabase, "pending_recurrences", idsByType.pending_recurrence, rowToPendingRecurrence),
     fetchByIds(supabase, "transfers", idsByType.transfer, rowToTransfer),
     profilePromise,
+    fetchByIds(supabase, "income_sources", idsByType.income_source, rowToIncomeSource),
+    fetchByIds(supabase, "income_entries", idsByType.income_entry, rowToIncomeEntry),
+    envelopePeriodsPromise,
     // Les échéances en attente créées par le job planifié (/api/cron/recurrences) ne
     // sont rattachées à aucun événement de journal : on les récupère systématiquement,
     // comme le profil, pour qu'elles apparaissent sans délai sur tous les appareils.
@@ -164,7 +208,17 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     events,
     cursor,
-    snapshots: { envelopes, transactions, recurrenceRules, pendingRecurrences, transfers, profile },
+    snapshots: {
+      envelopes,
+      transactions,
+      recurrenceRules,
+      pendingRecurrences,
+      transfers,
+      profile,
+      incomeSources,
+      incomeEntries,
+      envelopePeriods,
+    },
     deletions: { envelopes: deletedEnvelopeIds, recurrenceRules: deletedRecurrenceIds },
   });
 }

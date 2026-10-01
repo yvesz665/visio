@@ -14,9 +14,9 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
 import { getDb } from "@/lib/db/dexie";
 import { generateId } from "@/lib/utils/id";
-import { SUPPORTED_CURRENCIES } from "@/lib/domain/currency";
+import { SUPPORTED_CURRENCIES, toMinorUnits } from "@/lib/domain/currency";
 import { ColorPicker, IconPicker } from "@/components/IconPicker";
-import type { Envelope, Profile } from "@/types/domain";
+import type { Envelope, IncomeSource, Profile } from "@/types/domain";
 
 interface DraftEnvelope {
   id: string;
@@ -72,14 +72,22 @@ export default function OnboardingPage() {
     setError(null);
 
     const rootId = generateId();
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Africa/Ouagadougou";
     const payload = {
       currency,
       cycleAnchorDay,
       alertThresholdPct,
-      rootEnvelope: { id: rootId, name: rootName, color: "#158454", icon: "wallet", allocatedAmount: rootAmount },
+      timezone,
+      rootEnvelope: {
+        id: rootId,
+        name: rootName,
+        color: "#158454",
+        icon: "wallet",
+        allocatedAmount: toMinorUnits(rootAmount),
+      },
       initialEnvelopes: envelopes
         .filter((e) => e.name.trim().length > 0)
-        .map((e) => ({ ...e })),
+        .map((e) => ({ ...e, allocatedAmount: toMinorUnits(e.allocatedAmount) })),
     };
 
     try {
@@ -92,10 +100,11 @@ export default function OnboardingPage() {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.error ?? "Une erreur est survenue.");
       }
-      const data: { profile: Profile | null; envelopes: Envelope[] } = await res.json();
+      const data: { profile: Profile | null; envelopes: Envelope[]; incomeSources?: IncomeSource[] } =
+        await res.json();
 
       const db = getDb();
-      await db.transaction("rw", [db.profiles, db.envelopes], async () => {
+      await db.transaction("rw", [db.profiles, db.envelopes, db.incomeSources], async () => {
         // `profile` peut être absent dans le cas (très improbable) où l'onboarding
         // avait déjà été fait mais sans profil retrouvable : on se contente alors de
         // recopier les enveloppes déjà existantes pour ne pas bloquer l'utilisateur.
@@ -104,6 +113,9 @@ export default function OnboardingPage() {
         }
         for (const env of data.envelopes) {
           await db.envelopes.put({ ...env, syncStatus: "synced" });
+        }
+        for (const source of data.incomeSources ?? []) {
+          await db.incomeSources.put({ ...source, syncStatus: "synced" });
         }
       });
 

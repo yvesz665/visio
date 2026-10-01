@@ -9,6 +9,9 @@ import { generateId } from "@/lib/utils/id";
 import type {
   Attachment,
   Envelope,
+  EnvelopePeriod,
+  IncomeEntry,
+  IncomeSource,
   JournalEvent,
   PendingRecurrence,
   Profile,
@@ -32,6 +35,9 @@ export class VisioDatabase extends Dexie {
   attachments!: Table<Attachment, string>;
   journalEvents!: Table<JournalEvent, string>;
   syncMeta!: Table<SyncMeta, string>;
+  incomeSources!: Table<IncomeSource, string>;
+  incomeEntries!: Table<IncomeEntry, string>;
+  envelopePeriods!: Table<EnvelopePeriod, string>;
 
   constructor() {
     super("visio-db");
@@ -46,6 +52,48 @@ export class VisioDatabase extends Dexie {
       journalEvents: "id, userId, clientCreatedAt, isUndone, syncStatus, seq",
       syncMeta: "key",
     });
+
+    // v2 : report de periode, rentrees, depenses hors budget (montants passes en
+    // entiers ×100 cote serveur). Les enregistrements locaux existants (envelopes,
+    // transactions, etc.) sont dans l'ANCIENNE echelle et les evenements en attente non
+    // synchronises le sont aussi : plutot que de risquer une desynchronisation d'echelle
+    // (montants ×100 trop petits ou trop grands), on repart d'une base vide et on force
+    // un amorcage complet depuis le serveur (deja migre) au prochain demarrage. Un cout
+    // acceptable, ponctuel, pour un projet encore a tres faible usage reel -- la
+    // correction des montants prime sur la conservation d'éventuelles modifications
+    // locales non synchronisees au moment de cette mise a jour.
+    this.version(2)
+      .stores({
+        profiles: "id",
+        envelopes: "id, parentId, userId, status, [userId+parentId]",
+        transactions: "id, envelopeId, userId, occurredAt, deletedAt, recurrenceRuleId",
+        recurrenceRules: "id, envelopeId, userId, status, nextRunDate",
+        pendingRecurrences: "id, recurrenceRuleId, userId, status",
+        transfers: "id, userId, fromEnvelopeId, toEnvelopeId",
+        attachments: "id, transactionId, userId, syncStatus",
+        journalEvents: "id, userId, clientCreatedAt, isUndone, syncStatus, seq",
+        syncMeta: "key",
+        incomeSources: "id, userId",
+        incomeEntries: "id, userId, occurredAt, sourceId, deletedAt",
+        envelopePeriods: "id, envelopeId, userId, cycleStart, [envelopeId+cycleStart]",
+      })
+      .upgrade(async (tx) => {
+        await Promise.all([
+          tx.table("profiles").clear(),
+          tx.table("envelopes").clear(),
+          tx.table("transactions").clear(),
+          tx.table("recurrenceRules").clear(),
+          tx.table("pendingRecurrences").clear(),
+          tx.table("transfers").clear(),
+          tx.table("journalEvents").clear(),
+        ]);
+        // Le curseur de sync est par utilisateur (cursor:<userId>) : on ne peut pas cibler
+        // une clé précise ici, donc on vide tout syncMeta sauf l'identifiant d'appareil,
+        // pour forcer un amorçage complet (since=0) au prochain login, quel que soit le compte.
+        const deviceId = await tx.table("syncMeta").get("deviceId");
+        await tx.table("syncMeta").clear();
+        if (deviceId) await tx.table("syncMeta").put(deviceId);
+      });
   }
 }
 
@@ -109,6 +157,9 @@ export async function clearLocalDatabase(): Promise<void> {
       db.attachments,
       db.journalEvents,
       db.syncMeta,
+      db.incomeSources,
+      db.incomeEntries,
+      db.envelopePeriods,
     ],
     async () => {
       await Promise.all([
@@ -121,6 +172,9 @@ export async function clearLocalDatabase(): Promise<void> {
         db.attachments.clear(),
         db.journalEvents.clear(),
         db.syncMeta.clear(),
+        db.incomeSources.clear(),
+        db.incomeEntries.clear(),
+        db.envelopePeriods.clear(),
       ]);
     }
   );

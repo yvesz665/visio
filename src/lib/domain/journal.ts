@@ -24,7 +24,9 @@ export interface UndoStep {
     | "recurrence_rules"
     | "pending_recurrences"
     | "transfers"
-    | "profiles";
+    | "profiles"
+    | "income_entries"
+    | "income_sources";
   op: "upsert" | "delete";
   id: string;
   data?: Record<string, unknown>;
@@ -111,17 +113,12 @@ export function computeUndoSteps(event: JournalEvent): UndoStep[] {
       return [{ table: "transactions", op: "upsert", id: entityId, data: inversePayload ?? {} }];
 
     // --- Transferts -------------------------------------------------------
-    case "transfer.create": {
-      const fromId = payload.fromEnvelopeId as string;
-      const toId = payload.toEnvelopeId as string;
-      const fromPrev = payload.fromAllocatedBefore as number;
-      const toPrev = payload.toAllocatedBefore as number;
-      return [
-        { table: "envelopes", op: "upsert", id: fromId, data: { allocatedAmount: fromPrev } },
-        { table: "envelopes", op: "upsert", id: toId, data: { allocatedAmount: toPrev } },
-        { table: "transfers", op: "delete", id: entityId },
-      ];
-    }
+    // Un transfert ne modifie plus allocated_amount (voir repository.ts) : l'annuler
+    // se résume à supprimer la ligne. Son effet sur le disponible de la période en
+    // cours des deux enveloppes disparaît de lui-même, puisqu'il est recalculé à la
+    // volée à partir de la table `transfers`.
+    case "transfer.create":
+      return [{ table: "transfers", op: "delete", id: entityId }];
 
     // --- Récurrences --------------------------------------------------------
     case "recurrence.create":
@@ -191,6 +188,25 @@ export function computeUndoSteps(event: JournalEvent): UndoStep[] {
     case "profile.update":
       return [{ table: "profiles", op: "upsert", id: entityId, data: inversePayload ?? {} }];
 
+    // --- Rentrées d'argent ----------------------------------------------------
+    case "income_entry.create":
+      return [{ table: "income_entries", op: "delete", id: entityId }];
+
+    case "income_entry.update":
+      return [{ table: "income_entries", op: "upsert", id: entityId, data: inversePayload ?? {} }];
+
+    case "income_entry.delete":
+      return [{ table: "income_entries", op: "upsert", id: entityId, data: inversePayload ?? {} }];
+
+    case "income_source.create":
+      return [{ table: "income_sources", op: "delete", id: entityId }];
+
+    case "income_source.update":
+      return [{ table: "income_sources", op: "upsert", id: entityId, data: inversePayload ?? {} }];
+
+    case "income_source.delete":
+      return [{ table: "income_sources", op: "upsert", id: entityId, data: inversePayload ?? {} }];
+
     default:
       throw new UndoError("unsupported_event", `Type d'événement non pris en charge: ${eventType}`);
   }
@@ -205,6 +221,8 @@ export function affectedEntityTypes(steps: UndoStep[]): JournalEntityType[] {
     pending_recurrences: "pending_recurrence",
     transfers: "transfer",
     profiles: "profile",
+    income_entries: "income_entry",
+    income_sources: "income_source",
   };
   return Array.from(new Set(steps.map((s) => map[s.table])));
 }

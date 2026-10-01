@@ -13,6 +13,8 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { createServerClientFromBearerToken } from "@/lib/supabase/server";
 import {
   envelopeToRow,
+  incomeEntryToRow,
+  incomeSourceToRow,
   journalEventToRow,
   partialToRow,
   recurrenceRuleToRow,
@@ -20,6 +22,7 @@ import {
   transferToRow,
 } from "@/lib/supabase/mappers";
 import { checkThresholdAndNotify } from "@/lib/notifications/threshold-check";
+import { recalculatePeriodsForEnvelopeAndAncestors } from "@/lib/supabase/period-recalc";
 import type { JournalEvent } from "@/types/domain";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -127,13 +130,21 @@ async function applyEvent(supabase: SupabaseClient, userId: string, event: Journ
       if (error) throw new Error(error.message);
       // Ne retarde jamais la réponse : exécuté après l'envoi de la réponse HTTP via
       // l'API `after` de Next.js (fiable en environnement serverless, contrairement à
-      // un simple appel non attendu qui pourrait être interrompu). Effet secondaire
-      // best-effort, voir threshold-check.ts.
+      // un simple appel non attendu qui pourrait être interrompu). Effets secondaires
+      // best-effort : alerte de seuil (uniquement si rattachée à une enveloppe -- une
+      // dépense hors budget n'a pas de seuil) et recalcul en cascade au cas où la date
+      // saisie tombe dans une période déjà close.
+      const envelopeId = payload.envelopeId as string | null;
+      if (envelopeId) {
+        after(() =>
+          checkThresholdAndNotify(supabase, userId, envelopeId, {
+            amount: payload.amount as number,
+            type: payload.type as "income" | "expense",
+          })
+        );
+      }
       after(() =>
-        checkThresholdAndNotify(supabase, userId, payload.envelopeId as string, {
-          amount: payload.amount as number,
-          type: payload.type as "income" | "expense",
-        })
+        recalculatePeriodsForEnvelopeAndAncestors(supabase, userId, envelopeId, payload.occurredAt as string)
       );
       return;
     }
@@ -141,61 +152,59 @@ async function applyEvent(supabase: SupabaseClient, userId: string, event: Journ
       const row = partialToRow("transaction", payload);
       const { error } = await supabase.from("transactions").update(row).eq("id", event.entityId);
       if (error) throw new Error(error.message);
+      // La date et/ou l'enveloppe ont pu changer : on recalcule aussi bien l'ancienne
+      // que la nouvelle enveloppe rattachée (voir inversePayload, capturé avant
+      // modification), avec la date la plus ancienne des deux pour ne rien manquer.
+      const newEnvelopeId = (payload.envelopeId as string | null | undefined) ?? undefined;
+      const oldEnvelopeId = (event.inversePayload?.envelopeId as string | null | undefined) ?? undefined;
+      const newDate = payload.occurredAt as string | undefined;
+      const oldDate = event.inversePayload?.occurredAt as string | undefined;
+      const earliestDate = [newDate, oldDate].filter(Boolean).sort()[0];
+      after(() => recalculatePeriodsForEnvelopeAndAncestors(supabase, userId, newEnvelopeId, earliestDate));
+      after(() => recalculatePeriodsForEnvelopeAndAncestors(supabase, userId, oldEnvelopeId, earliestDate));
       return;
     }
     case "transaction.delete": {
+      const { data: current } = await supabase
+        .from("transactions")
+        .select("envelope_id, occurred_at")
+        .eq("id", event.entityId)
+        .maybeSingle();
       const { error } = await supabase
         .from("transactions")
         .update({ deleted_at: new Date().toISOString() })
         .eq("id", event.entityId);
       if (error) throw new Error(error.message);
+      after(() =>
+        recalculatePeriodsForEnvelopeAndAncestors(supabase, userId, current?.envelope_id, current?.occurred_at)
+      );
       return;
     }
 
     case "transfer.create": {
+      // Ne modifie jamais allocated_amount (voir ARCHITECTURE.md) : son effet passe
+      // uniquement par transfers_in/transfers_out de la période en cours des deux
+      // enveloppes, recalculées à la volée à la lecture (ou en cascade ci-dessous si la
+      // date tombe dans une période déjà close).
       const fromId = payload.fromEnvelopeId as string;
       const toId = payload.toEnvelopeId as string;
-      const amount = payload.amount as number;
-
-      const { data: fromRow, error: fromErr } = await supabase
-        .from("envelopes")
-        .select("allocated_amount")
-        .eq("id", fromId)
-        .single();
-      if (fromErr || !fromRow) throw new Error(fromErr?.message ?? "enveloppe source introuvable");
-      const { data: toRow, error: toErr } = await supabase
-        .from("envelopes")
-        .select("allocated_amount")
-        .eq("id", toId)
-        .single();
-      if (toErr || !toRow) throw new Error(toErr?.message ?? "enveloppe destination introuvable");
-
-      const { error: updFromErr } = await supabase
-        .from("envelopes")
-        .update({ allocated_amount: Number(fromRow.allocated_amount) - amount })
-        .eq("id", fromId);
-      if (updFromErr) throw new Error(updFromErr.message);
-
-      const { error: updToErr } = await supabase
-        .from("envelopes")
-        .update({ allocated_amount: Number(toRow.allocated_amount) + amount })
-        .eq("id", toId);
-      if (updToErr) throw new Error(updToErr.message);
-
       const { error: transferErr } = await supabase.from("transfers").upsert(
         transferToRow({
           id: event.entityId,
           userId,
           fromEnvelopeId: fromId,
           toEnvelopeId: toId,
-          amount,
+          amount: payload.amount as number,
           note: (payload.note as string) ?? null,
-          occurredAt: event.clientCreatedAt,
+          occurredAt: (payload.occurredAt as string) ?? event.clientCreatedAt,
           createdAt: event.clientCreatedAt,
         }),
         { onConflict: "id" }
       );
       if (transferErr) throw new Error(transferErr.message);
+      const occurredAt = (payload.occurredAt as string) ?? event.clientCreatedAt;
+      after(() => recalculatePeriodsForEnvelopeAndAncestors(supabase, userId, fromId, occurredAt));
+      after(() => recalculatePeriodsForEnvelopeAndAncestors(supabase, userId, toId, occurredAt));
       return;
     }
 
@@ -228,11 +237,17 @@ async function applyEvent(supabase: SupabaseClient, userId: string, event: Journ
         .update({ status: "confirmed", resolved_at: new Date().toISOString() })
         .eq("id", event.entityId);
       if (prErr) throw new Error(prErr.message);
+      const txEnvelopeId = tx.envelopeId as string | null;
+      if (txEnvelopeId) {
+        after(() =>
+          checkThresholdAndNotify(supabase, userId, txEnvelopeId, {
+            amount: tx.amount as number,
+            type: tx.type as "income" | "expense",
+          })
+        );
+      }
       after(() =>
-        checkThresholdAndNotify(supabase, userId, tx.envelopeId as string, {
-          amount: tx.amount as number,
-          type: tx.type as "income" | "expense",
-        })
+        recalculatePeriodsForEnvelopeAndAncestors(supabase, userId, txEnvelopeId, tx.occurredAt as string)
       );
       return;
     }
@@ -272,6 +287,45 @@ async function applyEvent(supabase: SupabaseClient, userId: string, event: Journ
     case "profile.update": {
       const row = partialToRow("profile", payload);
       const { error } = await supabase.from("profiles").update(row).eq("id", userId);
+      if (error) throw new Error(error.message);
+      return;
+    }
+
+    case "income_source.create": {
+      const row = incomeSourceToRow({ ...(payload as any), userId });
+      const { error } = await supabase.from("income_sources").upsert(row, { onConflict: "id" });
+      if (error) throw new Error(error.message);
+      return;
+    }
+    case "income_source.update": {
+      const row = partialToRow("income_source", payload);
+      const { error } = await supabase.from("income_sources").update(row).eq("id", event.entityId);
+      if (error) throw new Error(error.message);
+      return;
+    }
+    case "income_source.delete": {
+      const { error } = await supabase.from("income_sources").delete().eq("id", event.entityId);
+      if (error) throw new Error(error.message);
+      return;
+    }
+
+    case "income_entry.create": {
+      const row = incomeEntryToRow({ ...(payload as any), userId });
+      const { error } = await supabase.from("income_entries").upsert(row, { onConflict: "id" });
+      if (error) throw new Error(error.message);
+      return;
+    }
+    case "income_entry.update": {
+      const row = partialToRow("income_entry", payload);
+      const { error } = await supabase.from("income_entries").update(row).eq("id", event.entityId);
+      if (error) throw new Error(error.message);
+      return;
+    }
+    case "income_entry.delete": {
+      const { error } = await supabase
+        .from("income_entries")
+        .update({ deleted_at: new Date().toISOString() })
+        .eq("id", event.entityId);
       if (error) throw new Error(error.message);
       return;
     }

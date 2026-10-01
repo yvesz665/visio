@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeftRight, ChevronLeft, Pencil, Plus, Trash2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useAllEnvelopes, useEnvelopeTree, useProfile, useTransactions } from "@/hooks/useVisioData";
+import { useAllEnvelopes, useEnvelopePeriods, useEnvelopeTree, useProfile, useTransactions } from "@/hooks/useVisioData";
 import { EnvelopeIcon } from "@/components/IconPicker";
 import { AttachmentIndicator } from "@/components/AttachmentIndicator";
 import { EnvelopeTreeView } from "@/components/EnvelopeTreeView";
@@ -34,6 +34,7 @@ export default function EnvelopeDetailPage() {
   const tree = useEnvelopeTree();
   const allEnvelopes = useAllEnvelopes();
   const transactions = useTransactions(5000);
+  const periods = useEnvelopePeriods(params.id);
 
   const [showEdit, setShowEdit] = useState(false);
   const [showAddChild, setShowAddChild] = useState(false);
@@ -60,7 +61,18 @@ export default function EnvelopeDetailPage() {
   if (tree === undefined) return <p className="text-sm text-neutral-500">Chargement…</p>;
   if (!summary) return <p className="text-sm text-neutral-500">Enveloppe introuvable.</p>;
 
-  const { envelope, children, remaining, subtreeSpent, availableForDirect, isOverBudget } = summary;
+  const {
+    envelope,
+    children,
+    remaining,
+    subtreeSpent,
+    availableForDirect,
+    isOverBudget,
+    carryIn,
+    transfersIn,
+    transfersOut,
+    isProvisional,
+  } = summary;
   const isRoot = envelope.parentId === null;
 
   async function handleEdit(values: EnvelopeFormValues) {
@@ -161,16 +173,67 @@ export default function EnvelopeDetailPage() {
           tone={isOverBudget ? "danger" : "default"}
         />
         <StatCard
-          label="Restant"
+          label="Disponible"
           value={formatMoney(remaining, currency)}
           tone={remaining < 0 ? "danger" : "success"}
         />
       </section>
 
-      <p className="text-xs text-neutral-500">
-        Disponible pour des transactions directes sur ce nœud (hors sous-enveloppes) :{" "}
-        <span className="font-medium">{formatMoney(availableForDirect, currency)}</span>
-      </p>
+      {envelope.isRecurring && (
+        <section className="card">
+          <div className="mb-2 flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-neutral-700">Cycle en cours</h2>
+            {isProvisional && (
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-medium text-amber-800">
+                Provisoire — en attente de synchronisation
+              </span>
+            )}
+          </div>
+          <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+            <div>
+              <dt className="text-xs text-neutral-400">Report reçu</dt>
+              <dd className={carryIn < 0 ? "font-medium text-red-600" : "font-medium"}>
+                {formatMoney(carryIn, currency)}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-xs text-neutral-400">Transferts entrants</dt>
+              <dd className="font-medium text-brand-700">{formatMoney(transfersIn, currency)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-neutral-400">Transferts sortants</dt>
+              <dd className="font-medium text-red-600">{formatMoney(transfersOut, currency)}</dd>
+            </div>
+            <div>
+              <dt className="text-xs text-neutral-400">Disponible pour cette enveloppe seule</dt>
+              <dd className="font-medium">{formatMoney(availableForDirect, currency)}</dd>
+            </div>
+          </dl>
+        </section>
+      )}
+
+      {envelope.isRecurring && periods && periods.length > 0 && (
+        <details className="card">
+          <summary className="cursor-pointer text-sm font-semibold text-neutral-700">
+            Historique des cycles précédents ({periods.length})
+          </summary>
+          <ul className="mt-3 divide-y divide-neutral-100 text-sm">
+            {periods.map((p) => (
+              <li key={p.id} className="grid grid-cols-2 gap-2 py-2 sm:grid-cols-6">
+                <span className="col-span-2 text-neutral-500">
+                  {p.cycleStart} → {p.cycleEnd}
+                </span>
+                <span>Alloué {formatMoney(p.allocatedAmount, currency)}</span>
+                <span>Report {formatMoney(p.carryIn, currency)}</span>
+                <span>Dépensé {formatMoney(p.spent, currency)}</span>
+                <span className={p.carryOut < 0 ? "font-medium text-red-600" : "font-medium text-brand-700"}>
+                  Reste {formatMoney(p.carryOut, currency)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
 
       <section className="card">
         <div className="mb-3 flex items-center justify-between">
